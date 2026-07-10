@@ -74,20 +74,41 @@ closed the obvious escape routes:
   (or `/dev/stdout`/`/dev/stderr`) is a no-op, so `command -v gh 2>/dev/null`
   stays reversible instead of being gated as a "write".
 
-## Kernel-enforced reversibility (`nefertari-enforce`)
+## Kernel-enforced reversibility (pluggable)
 
 The broker's verdict is only as good as the process that respects it. To make
-"reversible" *physics* rather than *policy*, reversible shell commands run under
-[Landlock](https://docs.kernel.org/userspace-api/landlock.html) — the
-unprivileged Linux LSM (kernel ≥ 5.13, no root needed). `packages/enforce` is a
-~330 KB Rust wrapper: it confines the command's writes to the working directory
-(+ `/tmp` scratch + `/dev/null`) and lets the rest of the filesystem stay
-read/execute, then `execve`s the command so the restriction is inherited and
-cannot be dropped.
+"reversible" *physics* rather than *policy*, reversible shell commands run
+confined so their writes can only land in the working dir (+ `/tmp` + `/dev/null`)
+— a command the classifier *believed* was read-only literally cannot write
+elsewhere. Everything else on the filesystem stays read/execute.
+
+**Which mechanism does the confining is a driver — the core stays vendor-neutral.**
+This is deliberate: Nefertari does not depend on any one vendor's sandbox.
+
+| `NEFERTARI_ENFORCE_DRIVER` | Backend | Dependency |
+|---|---|---|
+| `landlock` *(default)* | our own `nefertari-enforce` Rust binary ([Landlock](https://docs.kernel.org/userspace-api/landlock.html) ABI 3, kernel ≥ 5.13, no root) | **none** — zero external dep |
+| `landrun` | community [`landrun`](https://github.com/Zouuup/landrun) (Landlock v5, incl. network rules) | `landrun` on PATH |
+| `custom` | **any** sandboxer — firejail, bubblewrap, Anthropic `sandbox-runtime`… | wired purely via env |
+| `null` | no confinement (fail-open) | — |
+
+The built-in default is a ~330 KB Rust wrapper that `execve`s the command so the
+Landlock restriction is inherited and cannot be dropped:
 
 ```bash
 cd packages/enforce && cargo build --release
 export NEFERTARI_ENFORCE_BIN=$PWD/target/release/nefertari-enforce   # agentd auto-detects it
+```
+
+The `custom` driver is the agnostic escape hatch — plug in any tool without
+touching code:
+
+```bash
+export NEFERTARI_ENFORCE_DRIVER=custom
+export NEFERTARI_ENFORCE_CUSTOM_BIN=firejail
+export NEFERTARI_ENFORCE_CUSTOM_PREARGS='["--quiet","--private-tmp"]'
+export NEFERTARI_ENFORCE_CUSTOM_WRITE_FLAG=--whitelist   # repeated per writable path
+# → firejail --quiet --private-tmp --whitelist <cwd> --whitelist /tmp -- bash -lc "<cmd>"
 ```
 
 Proven on the WSL2 kernel (6.6, Landlock ABI 3): a reversible command that tries
@@ -96,8 +117,9 @@ same write inside the dir succeeds (`packages/agentd/test/enforce.mjs`). This
 binds the reversibility verdict to enforcement — agentic frameworks classify;
 Nefertari classifies *and* the kernel holds the line. Honest scope: Landlock ABI
 3 confines **writes** (reversibility), not confidentiality or network egress —
-egress stays the broker's job. If the binary is absent, agentd fails open to
-plain `bash` unless `NEFERTARI_ENFORCE=1` forces fail-closed.
+egress stays the broker's job (use the `landrun`/`custom` drivers if you need
+kernel-level network rules too). If the selected driver is unavailable, agentd
+fails open to plain `bash` unless `NEFERTARI_ENFORCE=1` forces fail-closed.
 
 ## Quick start
 

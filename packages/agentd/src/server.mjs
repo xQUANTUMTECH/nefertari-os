@@ -130,13 +130,13 @@ server.tool(
     const workdir = cwd || os.homedir();
     // Reversible commands run under Landlock (writes confined to workdir + /tmp)
     // when the enforcer is installed; everything else runs as before.
-    const { file, args: execArgs, enforced } = enforceWrap(command, { cls: g.cls, cwd: workdir });
+    const { file, args: execArgs, enforced, driver } = enforceWrap(command, { cls: g.cls, cwd: workdir });
     const result = await new Promise((resolve) => {
       execFile(file, execArgs, { cwd: workdir, timeout: 120000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
         resolve({ exitCode: err ? (err.code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) });
       });
     });
-    record("shell", { command }, g.cls, result.exitCode === 0 ? "ok" : `exit ${result.exitCode}`, { notify: g.cls === CLASS.NOISY, enforced: !!enforced });
+    record("shell", { command }, g.cls, result.exitCode === 0 ? "ok" : `exit ${result.exitCode}`, { notify: g.cls === CLASS.NOISY, enforced: !!enforced, driver });
     return text(result);
   }
 );
