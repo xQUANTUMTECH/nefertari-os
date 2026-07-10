@@ -9,6 +9,8 @@
 //      and require EVERY segment to be on the safe/noisy allowlist.
 // A shell string is Turing-complete, so the safe default is always "gate it".
 
+import { isSensitivePath, classifyNet } from "./policy.mjs";
+
 export const CLASS = {
   REVERSIBLE: "reversible",
   NOISY: "noisy",
@@ -24,13 +26,26 @@ const DANGER = [
   { re: /\$\(/, why: "command substitution $()" },
   { re: /`/, why: "backtick command substitution" },
   { re: /<\(|>\(/, why: "process substitution" },
-  // redirect to a file/fd target (writes we cannot snapshot). Matches `>`/`>>`
-  // followed by a real target, but NOT fd-dup like `2>&1`/`>&2`.
-  { re: />{1,2}\s*[^&\s]/, why: "output redirect to file" },
   { re: /\beval\b/, why: "eval" },
   // pipe (or command chain) feeding an interpreter/sink
   { re: new RegExp(`\\|\\s*(sudo\\s+)?(${EXEC_SINKS})\\b`), why: "pipe into interpreter" },
 ];
+
+// Redirect targets that create no persistent state (writing to them is a no-op),
+// so a redirect to one of these is NOT a reason to gate.
+const DISCARD_SINKS = new Set(["/dev/null", "/dev/stdout", "/dev/stderr"]);
+
+// Find output redirects (`>`, `>>`, `2>`, `&>`, …) and return the first target
+// that would actually persist a write. fd-dup like `2>&1` is skipped (the char
+// after `>` is `&`); redirects to a discard sink are allowed.
+function redirectDanger(cmd) {
+  const re = /(?:^|[\s\d&])>>?\s*([^\s&|;<>]+)/g;
+  let m;
+  while ((m = re.exec(cmd))) {
+    if (!DISCARD_SINKS.has(m[1])) return "output redirect to file";
+  }
+  return null;
+}
 
 // find/xargs with destructive actions must gate even though `find` reads.
 const FIND_DESTRUCTIVE = /\bfind\b[^|;&]*\s-(delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/;
@@ -38,6 +53,7 @@ const FIND_DESTRUCTIVE = /\bfind\b[^|;&]*\s-(delete|exec|execdir|ok|okdir|fprint
 // Read-only leading commands (per-segment).
 const SAFE_RO = [
   /^(ls|cat|head|tail|wc|stat|file|grep|egrep|fgrep|rg|find|which|whereis|type)\b/,
+  /^command\s+-[vV]\b/, // `command -v X` is a read-only lookup (not `command X` which runs X)
   /^(sort|uniq|cut|tr|comm|diff|jq|column|fold|nl|tac|rev)\b/,
   /^(basename|dirname|realpath|readlink|tree|md5sum|sha1sum|sha256sum)\b/,
   /^(ps|top -b|pgrep|pidof|lsof|ss|netstat|ip (a|addr|r|route|link)|ifconfig)\b/,
@@ -66,6 +82,8 @@ const NOISY_PATTERNS = [
 
 function scanDanger(cmd) {
   for (const d of DANGER) if (d.re.test(cmd)) return d.why;
+  const rd = redirectDanger(cmd);
+  if (rd) return rd;
   if (FIND_DESTRUCTIVE.test(cmd)) return "find with destructive action";
   return null;
 }
@@ -74,7 +92,12 @@ function classifySegment(seg) {
   const s = seg.trim();
   if (!s) return CLASS.REVERSIBLE;
   if (/^find\b/.test(s) && FIND_DESTRUCTIVE.test(s)) return CLASS.IRREVERSIBLE;
-  if (/^(curl|wget)\b/.test(s)) return NET_EXFIL.test(s) ? CLASS.IRREVERSIBLE : CLASS.REVERSIBLE;
+  if (/^(curl|wget)\b/.test(s)) {
+    if (NET_EXFIL.test(s)) return CLASS.IRREVERSIBLE;
+    // No exfil flags, but a GET with a query string to an untrusted host is
+    // still a data-out channel ($VAR expansion the danger scan doesn't catch).
+    return classifyNet(s) === "irreversible" ? CLASS.IRREVERSIBLE : CLASS.REVERSIBLE;
+  }
   if (SAFE_RO.some((re) => re.test(s))) return CLASS.REVERSIBLE;
   if (NOISY_PATTERNS.some((re) => re.test(s))) return CLASS.NOISY;
   return CLASS.IRREVERSIBLE;
@@ -118,9 +141,13 @@ export function classify(tool, args) {
     case "pending_list":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
-      return { class: CLASS.REVERSIBLE, reason: "write covered by snapshot" };
+      return isSensitivePath(args.path)
+        ? { class: CLASS.IRREVERSIBLE, reason: "write to a sensitive path (startup/cron/service/auth) — effect can fire before undo" }
+        : { class: CLASS.REVERSIBLE, reason: "write covered by snapshot" };
     case "fs_delete":
-      return { class: CLASS.REVERSIBLE, reason: "delete covered by snapshot" };
+      return isSensitivePath(args.path)
+        ? { class: CLASS.IRREVERSIBLE, reason: "delete of a sensitive path (startup/cron/service/auth)" }
+        : { class: CLASS.REVERSIBLE, reason: "delete covered by snapshot" };
     case "undo":
       return { class: CLASS.NOISY, reason: "restores prior state" };
     case "shell":

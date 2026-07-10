@@ -12,6 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { classify, CLASS } from "./broker.mjs";
+import { enforceWrap } from "./enforce.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as approvals from "./approvals.mjs";
@@ -25,12 +26,31 @@ function text(s) {
   return { content: [{ type: "text", text: typeof s === "string" ? s : JSON.stringify(s, null, 2) }] };
 }
 
+// Cap on how many irreversible actions can sit unresolved at once. Without it,
+// a runaway or hostile agent can flood the human with approval requests until
+// they rubber-stamp one (approval fatigue). At the cap, new distinct
+// irreversible actions are refused outright until the queue drains.
+const MAX_PENDING = Number(process.env.NEFERTARI_MAX_PENDING) || 25;
+
 // Broker front door: classify, gate, journal. Returns null to proceed,
 // or a pending_approval response the tool must return as-is.
 function gate(tool, args) {
   const { class: cls, reason } = classify(tool, args);
   if (cls === CLASS.IRREVERSIBLE) {
     if (!approvals.consumeApproval(tool, args)) {
+      const pend = approvals.listPending();
+      const alreadyQueued = pend.some((p) => p.hash === approvals.actionHash(tool, args));
+      if (!alreadyQueued && pend.length >= MAX_PENDING) {
+        journal.append({ tool, args, class: cls, decision: "rate_limited", reason, pending: pend.length });
+        return {
+          gated: true,
+          response: text({
+            status: "rate_limited",
+            reason: `approval queue is full (${pend.length}/${MAX_PENDING}). A human must resolve pending actions before new irreversible ones are accepted.`,
+            pending: pend.length,
+          }),
+        };
+      }
       const entry = approvals.registerPending(tool, args, reason);
       journal.append({ id: entry.id, tool, args, class: cls, decision: "pending_approval", reason });
       return {
@@ -107,12 +127,16 @@ server.tool(
   async ({ command, cwd }) => {
     const g = gate("shell", { command });
     if (g.gated) return g.response;
+    const workdir = cwd || os.homedir();
+    // Reversible commands run under Landlock (writes confined to workdir + /tmp)
+    // when the enforcer is installed; everything else runs as before.
+    const { file, args: execArgs, enforced } = enforceWrap(command, { cls: g.cls, cwd: workdir });
     const result = await new Promise((resolve) => {
-      execFile("bash", ["-lc", command], { cwd: cwd || os.homedir(), timeout: 120000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile(file, execArgs, { cwd: workdir, timeout: 120000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
         resolve({ exitCode: err ? (err.code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) });
       });
     });
-    record("shell", { command }, g.cls, result.exitCode === 0 ? "ok" : `exit ${result.exitCode}`, { notify: g.cls === CLASS.NOISY });
+    record("shell", { command }, g.cls, result.exitCode === 0 ? "ok" : `exit ${result.exitCode}`, { notify: g.cls === CLASS.NOISY, enforced: !!enforced });
     return text(result);
   }
 );

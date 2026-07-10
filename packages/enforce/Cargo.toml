@@ -1,0 +1,18 @@
+[package]
+name = "nefertari-enforce"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Kernel-enforced reversibility: run a command that can only write to an explicit allowlist (Landlock)."
+
+[[bin]]
+name = "nefertari-enforce"
+path = "src/main.rs"
+
+[dependencies]
+landlock = "0.4"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true

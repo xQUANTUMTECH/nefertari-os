@@ -1,0 +1,24 @@
+# Local run of the Nefertari headless approval API.
+#   docker compose up --build
+#   curl localhost:7343/health
+#   curl -H "Authorization: Bearer $NEFERTARI_TOKEN" localhost:7343/pending
+services:
+  agentd:
+    build: .
+    image: ghcr.io/xquantumtech/nefertari-agentd:latest
+    ports:
+      - "7343:7343"
+    environment:
+      # Set a stable token so restarts don't rotate it. Omit to auto-generate
+      # one inside /data/token (printed in the logs on first boot).
+      NEFERTARI_TOKEN: ${NEFERTARI_TOKEN:-}
+      # Comma-separated hosts allowed to receive GET requests with a query string.
+      NEFERTARI_NET_ALLOW: ${NEFERTARI_NET_ALLOW:-}
+      # Cap on unresolved irreversible actions before new ones are refused.
+      NEFERTARI_MAX_PENDING: ${NEFERTARI_MAX_PENDING:-25}
+    volumes:
+      - nefertari-data:/data
+    restart: unless-stopped
+
+volumes:
+  nefertari-data:
