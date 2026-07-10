@@ -120,6 +120,33 @@ A 30-step procedure costs 1 model turn instead of 30. The single tools and the
 plan steps share one implementation (`src/ops.mjs`) — same snapshotting, same
 kernel enforcement, whichever door the action comes through.
 
+Plans are **fork-portable**: relative fs paths resolve inside the plan's dir and
+cannot escape it (an escape rolls the plan back). That's what makes the next
+primitive possible — the same plan can run against a fork whose path the caller
+never sees.
+
+## Speculative trajectories: `trajectories_run`
+
+Timeline (fork ×K) + plan executor = the single-path tax dies. Instead of
+try A → fail → backtrack → try B, the agent submits **K alternative plans in one
+call**; agentd forks the checkpoint K ways and runs every strategy **in
+parallel, each in its own isolated world**:
+
+- each trajectory is transactional (its own `runPlan` on its own fork): a failing
+  strategy rolls back to the checkpoint content and never poisons the others;
+- an optional `eval_cmd` runs in each *completed* fork (cwd = the fork, exit 0 =
+  pass); the first passing trajectory is recommended as **winner** — one
+  `timeline_promote` adopts it, the losers cost nothing to throw away;
+- classification composes worst-wins across **all** plans *and* the eval command,
+  so one irreversible step anywhere parks the whole call at the gate **before any
+  fork exists**;
+- shell steps run with cwd = their fork, so kernel enforcement write-confines each
+  strategy to its own world — the security track composes for free (K ≤ 8).
+
+For an AI team this *is* the org chart: checkpoint once, one fork per teammate,
+`eval_cmd` as the acceptance test, promote = merge review. For a single agent
+it's speculative execution: explore the whole frontier in one model turn.
+
 ## Kernel-enforced reversibility (pluggable)
 
 The broker's verdict is only as good as the process that respects it. To make
@@ -252,8 +279,9 @@ no secret ever touches a command line).
   enforce (live Landlock proof), real-model + Team AI runs. Public Docker image + CI.
 - **Phase 2** (started) — performance track (headline): ✅ timeline
   checkpoint/fork/restore/promote, ✅ `plan_run` (transactional intent, worst-class
-  gating up front); next: speculative trajectories for agent teams, live
-  world-model, `preflight` for embodied/robotic agents. Parallel security track: kernel-enforced reversibility
+  gating up front), ✅ `trajectories_run` (K strategies in parallel forks, eval,
+  promote the winner); next: live world-model (orientation tax), `preflight` for
+  embodied/robotic agents. Parallel security track: kernel-enforced reversibility
   (✅ `nefertari-enforce`, Landlock ABI 3, proven), Windows companion (✅ toasts +
   approve/deny from Windows; next: UI Automation eyes/hands), NixOS-WSL custom
   distro with native declarative rollback, socket-daemon form of the enforcer.

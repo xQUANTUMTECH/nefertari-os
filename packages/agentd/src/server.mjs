@@ -14,6 +14,7 @@ import * as snapshots from "./snapshots.mjs";
 import * as timeline from "./timeline.mjs";
 import * as ops from "./ops.mjs";
 import { runPlan } from "./plan.mjs";
+import { runTrajectories } from "./trajectories.mjs";
 import * as approvals from "./approvals.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
@@ -151,6 +152,40 @@ server.tool(
       planId: result.plan_id,
       notify: g.cls === CLASS.NOISY || result.status !== "completed",
     });
+    return text(result);
+  }
+);
+
+server.tool(
+  "trajectories_run",
+  "Run up to 8 ALTERNATIVE plans in parallel, each in its own isolated fork of a checkpoint — try K strategies at once instead of try/fail/backtrack. Each trajectory is transactional (a failing one rolls back to the checkpoint content and never touches the others). An optional eval_cmd runs in each successful fork (exit 0 = pass); the first passing trajectory is recommended as winner — adopt it with timeline_promote. fs step paths should be RELATIVE (resolved inside each fork); shell steps run with cwd = the fork. The call is classified as the worst step across ALL trajectories + the eval command.",
+  {
+    checkpoint_id: z.string().describe("Checkpoint to fork from (timeline_checkpoint first)"),
+    trajectories: z
+      .array(
+        z.object({
+          label: z.string().optional(),
+          steps: z
+            .array(z.object({ tool: z.enum(PLAN_TOOLS), args: z.record(z.any()) }))
+            .min(1)
+            .max(50),
+        })
+      )
+      .min(1)
+      .max(8),
+    eval_cmd: z.string().optional().describe("Shell command scored per fork (cwd = fork). Exit 0 = pass."),
+  },
+  async ({ checkpoint_id, trajectories, eval_cmd }) => {
+    const g = gate("trajectories_run", { checkpoint_id, trajectories, eval_cmd });
+    if (g.gated) return g.response;
+    const result = await runTrajectories(checkpoint_id, trajectories, { evalCmd: eval_cmd });
+    record(
+      "trajectories_run",
+      { checkpoint_id, trajectories: trajectories.length, eval_cmd },
+      g.cls,
+      result.winner ? `winner ${result.winner.fork_id}` : "no winner",
+      { notify: g.cls === CLASS.NOISY }
+    );
     return text(result);
   }
 );

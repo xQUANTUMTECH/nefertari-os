@@ -70,8 +70,9 @@ before step 1 runs).
 `fork ×K` from T1 + `plan_run` from T2 = run K strategies in parallel, evaluate,
 `promote` the best. For Team AI: one fork per teammate, promote = merge review.
 
-- [ ] `trajectories_run` tool: {checkpoint, plans[K], eval_cmd} → results + scores
-- [ ] parallelism cap + per-fork enforcement (Landlock write-confine each fork to its own dir — security track composes for free)
+- [x] `trajectories_run` tool: {checkpoint_id, trajectories[K], eval_cmd} → results + winner recommendation — `src/trajectories.mjs` (each trajectory = `runPlan` on its own fork, so failures roll back per-fork and never poison the others; eval_cmd scored per completed fork, exit 0 = pass; `classifyTrajectories` in the broker = worst across ALL plans + eval, gate fires before any fork exists)
+- [x] parallelism cap (K ≤ 8 at the tool schema) + per-fork enforcement (shell steps run with cwd = fork dir → Landlock confines writes to the fork; security track composes for free)
+- [x] plans are fork-portable: relative fs paths resolve INSIDE the plan/fork dir, escapes roll back (`resolveInside` in plan.mjs)
 
 ### T4 — Live world-model (`world` tool)
 Kills the orientation tax: one call returns the machine as typed data — OS,

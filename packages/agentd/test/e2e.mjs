@@ -38,6 +38,7 @@ assert.deepEqual(names, [
   "timeline_list",
   "timeline_promote",
   "timeline_restore",
+  "trajectories_run",
   "undo",
 ]);
 
@@ -86,6 +87,28 @@ const gatedPlan = parse(
 );
 assert.equal(gatedPlan.status, "pending_approval");
 console.log("plan_run: 2 steps in 1 call OK; irreversible plan gated up front");
+
+// trajectories_run over MCP: fork ×2, race strategies, promote the winner
+const ckR = parse(await client.callTool({ name: "timeline_checkpoint", arguments: { dir: work, label: "e2e traj" } }));
+const traj = parse(
+  await client.callTool({
+    name: "trajectories_run",
+    arguments: {
+      checkpoint_id: ckR.checkpoint_id,
+      trajectories: [
+        { label: "bad", steps: [{ tool: "fs_write", args: { path: "answer.txt", content: "BAD" } }] },
+        { label: "good", steps: [{ tool: "fs_write", args: { path: "answer.txt", content: "GOOD" } }] },
+      ],
+      eval_cmd: "grep -q GOOD answer.txt",
+    },
+  })
+);
+assert.equal(traj.winner.label, "good");
+assert.ok(!fs.existsSync(path.join(work, "answer.txt")), "speculation left the original untouched");
+const prom = parse(await client.callTool({ name: "timeline_promote", arguments: { fork_id: traj.winner.fork_id, dir: work } }));
+assert.equal(prom.status, "promoted");
+assert.equal(fs.readFileSync(path.join(work, "answer.txt"), "utf8"), "GOOD");
+console.log("trajectories_run: 2 strategies raced in forks, winner promoted");
 
 // journal saw everything
 const j = parse(await client.callTool({ name: "journal_tail", arguments: { n: 50 } }));

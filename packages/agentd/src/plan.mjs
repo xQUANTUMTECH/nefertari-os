@@ -13,20 +13,36 @@
 // Transaction boundary = the plan's dir (tree-level restore). fs_write/fs_delete
 // steps are additionally per-file snapshotted by ops, wherever they point.
 
+import path from "node:path";
 import { classifyPlan, CLASS } from "./broker.mjs";
 import * as timeline from "./timeline.mjs";
 import * as ops from "./ops.mjs";
 import { newId, append } from "./journal.mjs";
 
+// Relative fs paths resolve against the plan dir and MUST stay inside it.
+// This is what makes plans fork-portable (trajectories: the caller cannot know
+// a fork's path before the fork exists) — and confinement to the transaction
+// boundary is exactly the scope the checkpoint can restore. Escapes throw,
+// which rolls the plan back. Absolute paths pass through and are classified
+// as usual (sensitive-path checks apply to them up front).
+function resolveInside(dir, p) {
+  if (typeof p !== "string" || !p) throw new Error("step is missing a path");
+  if (path.isAbsolute(p)) return p;
+  const abs = path.resolve(dir, p);
+  if (abs !== dir && !abs.startsWith(dir + path.sep))
+    throw new Error(`relative path escapes the plan dir: ${p}`);
+  return abs;
+}
+
 async function execStep(step, cls, dir) {
   const args = step.args || {};
   switch (step.tool) {
     case "fs_read":
-      return ops.opFsRead(args);
+      return ops.opFsRead({ ...args, path: resolveInside(dir, args.path) });
     case "fs_write":
-      return ops.opFsWrite(args);
+      return ops.opFsWrite({ ...args, path: resolveInside(dir, args.path) });
     case "fs_delete":
-      return ops.opFsDelete(args);
+      return ops.opFsDelete({ ...args, path: resolveInside(dir, args.path) });
     case "shell":
       // Shell steps default to the plan's dir, so enforcement confines their
       // writes to the transaction boundary.

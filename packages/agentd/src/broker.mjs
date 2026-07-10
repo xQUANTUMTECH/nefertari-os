@@ -161,6 +161,35 @@ export function classifyPlan(steps) {
   return { class: worst, reason, per };
 }
 
+// A trajectories call = K plans + an optional eval command. Its class is the
+// WORST across all of them, so one irreversible step in ANY trajectory (or in
+// the eval command) parks the whole call at the gate before any fork exists.
+export function classifyTrajectories(trajectories, evalCmd) {
+  if (!Array.isArray(trajectories) || trajectories.length === 0)
+    return { class: CLASS.IRREVERSIBLE, reason: "empty or malformed trajectories" };
+  let worst = CLASS.REVERSIBLE;
+  let reason = `all ${trajectories.length} trajectories reversible`;
+  for (let i = 0; i < trajectories.length; i++) {
+    const c = classifyPlan(trajectories[i]?.steps);
+    if (c.class === CLASS.IRREVERSIBLE)
+      return { class: CLASS.IRREVERSIBLE, reason: `trajectory ${i}: ${c.reason}` };
+    if (c.class === CLASS.NOISY && worst === CLASS.REVERSIBLE) {
+      worst = CLASS.NOISY;
+      reason = `trajectory ${i}: ${c.reason}`;
+    }
+  }
+  if (evalCmd) {
+    const c = classifyShell(evalCmd);
+    if (c === CLASS.IRREVERSIBLE)
+      return { class: CLASS.IRREVERSIBLE, reason: `eval command: ${shellReason(evalCmd)}` };
+    if (c === CLASS.NOISY && worst === CLASS.REVERSIBLE) {
+      worst = CLASS.NOISY;
+      reason = `eval command: ${shellReason(evalCmd)}`;
+    }
+  }
+  return { class: worst, reason };
+}
+
 // Classify a tool invocation. Returns { class, reason }.
 export function classify(tool, args) {
   switch (tool) {
@@ -191,6 +220,8 @@ export function classify(tool, args) {
       const { class: cls, reason } = classifyPlan(args?.steps);
       return { class: cls, reason };
     }
+    case "trajectories_run":
+      return classifyTrajectories(args?.trajectories, args?.eval_cmd);
     case "shell":
       return { class: classifyShell(args.command || ""), reason: shellReason(args.command || "") };
     default:
