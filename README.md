@@ -72,10 +72,34 @@ node src/cli.mjs journal 20          # tail the journal
 node src/cli.mjs undo <snapshot_id>  # restore a snapshot
 ```
 
+## Windows companion (phase 2, block 1)
+
+If agentd runs in WSL2, you approve from Windows — no shell into WSL needed.
+`packages/companion-win/nefertari-companion.ps1` (zero deps, PowerShell 5.1):
+
+```powershell
+.\nefertari-companion.ps1                 # watch: toast on every new pending + keys 1-9 / A / D
+.\nefertari-companion.ps1 -Once           # list pending and exit
+.\nefertari-companion.ps1 -Approve <id>   # approve
+.\nefertari-companion.ps1 -Deny <id>      # deny
+.\nefertari-companion.ps1 -Journal 20     # tail the audit journal
+```
+
+The companion never reimplements gate logic: it shells into agentd's own CLI
+inside WSL, so there is exactly one approval implementation.
+
+## Real-model test
+
+`examples/ania-on-nefertari.mjs` connects a live LLM (any OpenAI-compatible
+endpoint) to agentd over MCP and gives it a sysadmin task whose only path is an
+irreversible action. Verified with kat-coder-pro-v2.5 on AtlasCloud: the model
+works normally through reversible tools, hits the gate on `rm -rf`, and stops —
+with the data physically untouched on disk.
+
 ## Roadmap
 
-- **Phase 1** (now): agentd + broker + journal + snapshots, MCP over stdio.
-- **Phase 2**: Windows companion (notifications + approval UI + UI Automation eyes/hands), NixOS-WSL custom distro with native declarative rollback.
+- **Phase 1** (done): agentd + broker + journal + snapshots, MCP over stdio. Tests: smoke 21/21, red-team 52/52, e2e + hard e2e, real-model run.
+- **Phase 2** (started): Windows companion (✅ toasts + approve/deny from Windows; next: UI Automation eyes/hands), Rust enforcement daemon at the trust boundary (Landlock/seccomp), NixOS-WSL custom distro with native declarative rollback.
 - **Phase 3**: desktop control via accessibility APIs (AT-SPI / UIA / AXUIElement), local model routing, voice.
 
 ## License
