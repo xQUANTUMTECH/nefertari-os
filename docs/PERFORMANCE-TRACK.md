@@ -63,8 +63,8 @@ in one shot **inside a timeline checkpoint**; any step fails → atomic restore.
 *transactional + gated* (a plan containing an irreversible step parks at the gate
 before step 1 runs).
 
-- [ ] `plan_run` tool: steps = existing tools only; pre-classify ALL steps first (worst class wins, gate up front); checkpoint → execute → auto-restore on failure
-- [ ] journal: one plan entry + per-step children
+- [x] `plan_run` tool: steps = existing tools only; pre-classify ALL steps first (worst class wins, gate up front); checkpoint → execute → auto-restore on failure — `src/plan.mjs` + `src/ops.mjs` (single implementation shared with the individual tools), `classifyPlan` in the broker, failed state auto-checkpointed for forensics, shell steps default cwd = plan dir
+- [x] journal: one plan entry + per-step children (`plan` + `step` fields)
 
 ### T3 — Speculative trajectories (the team superpower)
 `fork ×K` from T1 + `plan_run` from T2 = run K strategies in parallel, evaluate,

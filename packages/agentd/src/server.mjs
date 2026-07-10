@@ -3,19 +3,17 @@
 // Every tool call flows through the permission broker; every action is journaled;
 // every write is snapshotted; irreversible actions wait for the human gate.
 
-import fs from "node:fs";
-import path from "node:path";
 import os from "node:os";
-import { execFile } from "node:child_process";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { classify, CLASS } from "./broker.mjs";
-import { enforceWrap } from "./enforce.mjs";
+import { classify, CLASS, PLAN_TOOLS } from "./broker.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as timeline from "./timeline.mjs";
+import * as ops from "./ops.mjs";
+import { runPlan } from "./plan.mjs";
 import * as approvals from "./approvals.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
@@ -84,9 +82,9 @@ server.tool(
   async ({ path: p }) => {
     const g = gate("fs_read", { path: p });
     if (g.gated) return g.response;
-    const data = fs.readFileSync(p, "utf8");
-    record("fs_read", { path: p }, g.cls, "ok", { bytes: data.length });
-    return text(data);
+    const r = ops.opFsRead({ path: p });
+    record("fs_read", { path: p }, g.cls, "ok", r.meta);
+    return text(r.output);
   }
 );
 
@@ -97,11 +95,9 @@ server.tool(
   async ({ path: p, content }) => {
     const g = gate("fs_write", { path: p });
     if (g.gated) return g.response;
-    const snapId = snapshots.snapshot([p], { tool: "fs_write" });
-    fs.mkdirSync(path.dirname(path.resolve(p)), { recursive: true });
-    fs.writeFileSync(p, content);
-    record("fs_write", { path: p }, g.cls, "ok", { snapshotId: snapId, bytes: content.length });
-    return text({ status: "written", path: p, snapshot_id: snapId });
+    const r = ops.opFsWrite({ path: p, content });
+    record("fs_write", { path: p }, g.cls, "ok", r.meta);
+    return text(r.output);
   }
 );
 
@@ -112,12 +108,9 @@ server.tool(
   async ({ path: p }) => {
     const g = gate("fs_delete", { path: p });
     if (g.gated) return g.response;
-    if (!fs.existsSync(p)) return text({ status: "noop", reason: "file does not exist" });
-    if (fs.statSync(p).isDirectory()) return text({ status: "refused", reason: "directories are not deletable in phase 1 (not snapshot-covered)" });
-    const snapId = snapshots.snapshot([p], { tool: "fs_delete" });
-    fs.rmSync(p);
-    record("fs_delete", { path: p }, g.cls, "ok", { snapshotId: snapId });
-    return text({ status: "deleted", path: p, snapshot_id: snapId });
+    const r = ops.opFsDelete({ path: p });
+    if (r.meta) record("fs_delete", { path: p }, g.cls, "ok", r.meta);
+    return text(r.output);
   }
 );
 
@@ -128,16 +121,36 @@ server.tool(
   async ({ command, cwd }) => {
     const g = gate("shell", { command });
     if (g.gated) return g.response;
-    const workdir = cwd || os.homedir();
-    // Reversible commands run under Landlock (writes confined to workdir + /tmp)
-    // when the enforcer is installed; everything else runs as before.
-    const { file, args: execArgs, enforced, driver } = enforceWrap(command, { cls: g.cls, cwd: workdir });
-    const result = await new Promise((resolve) => {
-      execFile(file, execArgs, { cwd: workdir, timeout: 120000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-        resolve({ exitCode: err ? (err.code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) });
-      });
+    const r = await ops.opShell({ command, cwd }, g.cls);
+    record("shell", { command }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, { notify: g.cls === CLASS.NOISY, ...r.meta });
+    return text(r.output);
+  }
+);
+
+server.tool(
+  "plan_run",
+  "Execute a whole plan (ordered list of tool steps) in ONE call, inside a timeline transaction: the dir is checkpointed first, steps run in order, and if any step fails the dir is restored (the failed state is auto-checkpointed for forensics). The plan is classified as the WORST of its steps, so a plan containing an irreversible step waits at the human gate before step 1 runs. Allowed step tools: fs_read, fs_write, fs_delete, shell (shell cwd defaults to the plan dir). Use this instead of many single calls for multi-step procedures.",
+  {
+    dir: z.string().describe("Working dir = the transaction boundary (checkpointed / restored)"),
+    steps: z
+      .array(
+        z.object({
+          tool: z.enum(PLAN_TOOLS),
+          args: z.record(z.any()).describe("Arguments for the step's tool"),
+        })
+      )
+      .min(1)
+      .max(50),
+    label: z.string().optional(),
+  },
+  async ({ dir, steps, label }) => {
+    const g = gate("plan_run", { dir, steps });
+    if (g.gated) return g.response;
+    const result = await runPlan(dir, steps, { label });
+    record("plan_run", { dir, steps: steps.length, label }, g.cls, result.status, {
+      planId: result.plan_id,
+      notify: g.cls === CLASS.NOISY || result.status !== "completed",
     });
-    record("shell", { command }, g.cls, result.exitCode === 0 ? "ok" : `exit ${result.exitCode}`, { notify: g.cls === CLASS.NOISY, enforced: !!enforced, driver });
     return text(result);
   }
 );

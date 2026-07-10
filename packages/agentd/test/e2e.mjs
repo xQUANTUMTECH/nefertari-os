@@ -24,7 +24,22 @@ const parse = (r) => JSON.parse(r.content[0].text);
 const { tools } = await client.listTools();
 const names = tools.map((t) => t.name).sort();
 console.log("tools:", names.join(", "));
-assert.deepEqual(names, ["fs_delete", "fs_read", "fs_write", "journal_tail", "pending_list", "shell", "sys_status", "undo"]);
+assert.deepEqual(names, [
+  "fs_delete",
+  "fs_read",
+  "fs_write",
+  "journal_tail",
+  "pending_list",
+  "plan_run",
+  "shell",
+  "sys_status",
+  "timeline_checkpoint",
+  "timeline_fork",
+  "timeline_list",
+  "timeline_promote",
+  "timeline_restore",
+  "undo",
+]);
 
 // write → read → undo roundtrip
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "nef-e2e-"));
@@ -47,6 +62,30 @@ console.log("safe shell:", sh.stdout.trim().replace(/\n/g, " · "));
 const danger = parse(await client.callTool({ name: "shell", arguments: { command: `rm -rf ${work}` } }));
 assert.equal(danger.status, "pending_approval");
 console.log(`dangerous shell correctly gated → ${danger.action_id} (waiting for: nefertari approve)`);
+
+// plan_run over MCP: multi-step in one call; irreversible plans gate up front
+const plan = parse(
+  await client.callTool({
+    name: "plan_run",
+    arguments: {
+      dir: work,
+      steps: [
+        { tool: "fs_write", args: { path: path.join(work, "p.txt"), content: "PLAN" } },
+        { tool: "shell", args: { command: "cat p.txt" } },
+      ],
+    },
+  })
+);
+assert.equal(plan.status, "completed");
+assert.equal(plan.steps[1].output.stdout, "PLAN");
+const gatedPlan = parse(
+  await client.callTool({
+    name: "plan_run",
+    arguments: { dir: work, steps: [{ tool: "shell", args: { command: `rm -rf ${work}` } }] },
+  })
+);
+assert.equal(gatedPlan.status, "pending_approval");
+console.log("plan_run: 2 steps in 1 call OK; irreversible plan gated up front");
 
 // journal saw everything
 const j = parse(await client.callTool({ name: "journal_tail", arguments: { n: 50 } }));

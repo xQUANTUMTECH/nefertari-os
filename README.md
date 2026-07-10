@@ -11,7 +11,7 @@ Every OS assumes its caller has persistent memory, near-zero cost per action, an
 Nefertari is the layer that removes those taxes (see [docs/PERFORMANCE-TRACK.md](docs/PERFORMANCE-TRACK.md)):
 
 1. **Time as a primitive** — checkpoint a working tree, **fork it into K isolated copies** (one per strategy, or one per team member), run them in parallel, **promote** the winner. Exploration stops being sequential.
-2. **Execution at the level of intent** (next) — submit a plan, get one consolidated result inside a transaction, instead of paying one model turn per step.
+2. **Execution at the level of intent** — submit a plan, get one consolidated result inside a transaction, instead of paying one model turn per step.
 3. **A machine that knows itself** (next) — typed system state and session-over-session deltas instead of 20 probe commands.
 
 **Security is the parallel track, powered by the same machinery.** Every write is snapshotted and undoable; nothing irreversible happens without a human gate — not as a convention the AI is asked to respect, but as physics (broker + kernel enforcement); everything lands in an append-only journal. For **embodied / robotic agents** — where the world itself cannot be snapshotted — the same primitives invert: fork the world *model*, not the world, and ask the broker *before* actuating (preflight, on the roadmap).
@@ -98,6 +98,27 @@ losers cost nothing to throw away. Excluded dirs are left untouched by restores;
 every restore/promote is undoable via its automatic safety checkpoint. Backend is
 plain file copy (runs anywhere); the interface is stable for CoW backends
 (btrfs/ZFS/overlayfs) later.
+
+## Execution at the level of intent: `plan_run`
+
+The round-trip tax is the dominant cost of a long-horizon agent: one model turn
+per tool call. `plan_run` inverts it — the agent submits a whole plan (an ordered
+list of `fs_read`/`fs_write`/`fs_delete`/`shell` steps) and agentd executes it in
+**one call, inside a timeline transaction**:
+
+- the dir is checkpointed before step 1 (transaction boundary; shell steps
+  default their cwd to it, so enforcement confines their writes to it);
+- any failing step → the dir is **restored atomically** — and the failed state is
+  itself auto-checkpointed first, so it stays inspectable for forensics;
+- the plan is classified as the **worst of its steps**, so a plan containing one
+  irreversible step parks at the human gate *before step 1 runs* — no partial
+  execution up to a wall. `undo`, `timeline_*` and nested `plan_run` are not
+  allowed inside a plan;
+- the journal records the plan and each step (`plan` + `step` fields).
+
+A 30-step procedure costs 1 model turn instead of 30. The single tools and the
+plan steps share one implementation (`src/ops.mjs`) — same snapshotting, same
+kernel enforcement, whichever door the action comes through.
 
 ## Kernel-enforced reversibility (pluggable)
 
@@ -230,9 +251,9 @@ no secret ever touches a command line).
   cap, `/dev/null` no-op redirects. Tests: red-team 63/63, smoke 23/23, HTTP 6/6,
   enforce (live Landlock proof), real-model + Team AI runs. Public Docker image + CI.
 - **Phase 2** (started) — performance track (headline): ✅ timeline
-  checkpoint/fork/restore/promote; next: plan executor (transactional intent),
-  speculative trajectories for agent teams, live world-model, `preflight` for
-  embodied/robotic agents. Parallel security track: kernel-enforced reversibility
+  checkpoint/fork/restore/promote, ✅ `plan_run` (transactional intent, worst-class
+  gating up front); next: speculative trajectories for agent teams, live
+  world-model, `preflight` for embodied/robotic agents. Parallel security track: kernel-enforced reversibility
   (✅ `nefertari-enforce`, Landlock ABI 3, proven), Windows companion (✅ toasts +
   approve/deny from Windows; next: UI Automation eyes/hands), NixOS-WSL custom
   distro with native declarative rollback, socket-daemon form of the enforcer.

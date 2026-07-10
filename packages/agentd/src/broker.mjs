@@ -132,6 +132,35 @@ export function shellReason(command) {
       : "read-only command";
 }
 
+// Tools allowed inside a plan. No plan_run (no nesting), no undo/timeline
+// (time travel from inside a transaction would invalidate the transaction).
+export const PLAN_TOOLS = ["fs_read", "fs_write", "fs_delete", "shell"];
+
+// A plan's class is the WORST class of its steps, so one irreversible step
+// parks the whole plan at the gate before step 1 runs. Returns { class,
+// reason, per } — per[i] is the classification of step i (used by the executor).
+export function classifyPlan(steps) {
+  if (!Array.isArray(steps) || steps.length === 0)
+    return { class: CLASS.IRREVERSIBLE, reason: "empty or malformed plan", per: [] };
+  const per = [];
+  let worst = CLASS.REVERSIBLE;
+  let reason = `all ${steps.length} steps reversible`;
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i] || {};
+    const c = PLAN_TOOLS.includes(s.tool)
+      ? classify(s.tool, s.args || {})
+      : { class: CLASS.IRREVERSIBLE, reason: `tool not allowed inside a plan: ${s.tool}` };
+    per.push(c);
+    if (c.class === CLASS.IRREVERSIBLE)
+      return { class: CLASS.IRREVERSIBLE, reason: `step ${i} (${s.tool}): ${c.reason}`, per };
+    if (c.class === CLASS.NOISY && worst === CLASS.REVERSIBLE) {
+      worst = CLASS.NOISY;
+      reason = `step ${i} (${s.tool}): ${c.reason}`;
+    }
+  }
+  return { class: worst, reason, per };
+}
+
 // Classify a tool invocation. Returns { class, reason }.
 export function classify(tool, args) {
   switch (tool) {
@@ -158,6 +187,10 @@ export function classify(tool, args) {
       return { class: CLASS.NOISY, reason: "rewrites the working tree (auto-checkpointed first, so itself undoable)" };
     case "timeline_list":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
+    case "plan_run": {
+      const { class: cls, reason } = classifyPlan(args?.steps);
+      return { class: cls, reason };
+    }
     case "shell":
       return { class: classifyShell(args.command || ""), reason: shellReason(args.command || "") };
     default:
