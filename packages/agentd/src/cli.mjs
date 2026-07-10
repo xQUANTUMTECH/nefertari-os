@@ -47,6 +47,11 @@ switch (cmd) {
     print(snapshots.restore(rest[0]));
     break;
   }
+  case "serve": {
+    const { serve } = await import("./http.mjs");
+    serve();
+    break;
+  }
   default:
     print(`nefertari — human gate CLI
 
@@ -56,5 +61,6 @@ Usage:
   nefertari deny <id>         deny and remove a pending action
   nefertari journal [n]       tail the action journal
   nefertari snapshots         list snapshots
-  nefertari undo <snap_id>    restore a snapshot`);
+  nefertari undo <snap_id>    restore a snapshot
+  nefertari serve             headless approval API over HTTP (containers/Railway)`);
 }

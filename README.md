@@ -70,6 +70,9 @@ node src/cli.mjs pending             # list actions waiting for approval
 node src/cli.mjs approve <id>        # approve one
 node src/cli.mjs journal 20          # tail the journal
 node src/cli.mjs undo <snapshot_id>  # restore a snapshot
+node src/cli.mjs serve               # headless approval API (containers/Railway):
+                                     #   GET /pending · POST /pending/:id/approve|deny
+                                     #   Bearer token in ~/.nefertari/token or NEFERTARI_TOKEN
 ```
 
 ## Windows companion (phase 2, block 1)
