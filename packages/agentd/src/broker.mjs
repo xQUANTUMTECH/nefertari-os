@@ -1,0 +1,131 @@
+// Permission broker: classifies every action before it touches the host.
+// Allowlist philosophy: unknown = irreversible = human gate.
+//
+// Shell classification is defense-in-depth:
+//   1. GLOBAL DANGER SCAN over the raw string catches side-effect-enabling
+//      constructs (substitution, redirects, pipe-to-interpreter) that a naive
+//      per-segment allowlist would miss. Any hit => IRREVERSIBLE.
+//   2. Only if the string is free of those constructs do we split into segments
+//      and require EVERY segment to be on the safe/noisy allowlist.
+// A shell string is Turing-complete, so the safe default is always "gate it".
+
+export const CLASS = {
+  REVERSIBLE: "reversible",
+  NOISY: "noisy",
+  IRREVERSIBLE: "irreversible",
+};
+
+// Interpreters / sinks that turn arbitrary input into execution or writes.
+const EXEC_SINKS =
+  "sh|bash|zsh|dash|ksh|fish|python3?|perl|ruby|node|deno|php|eval|source|exec|tee|dd|xargs|env";
+
+// --- GLOBAL danger constructs: presence anywhere forces IRREVERSIBLE ---
+const DANGER = [
+  { re: /\$\(/, why: "command substitution $()" },
+  { re: /`/, why: "backtick command substitution" },
+  { re: /<\(|>\(/, why: "process substitution" },
+  // redirect to a file/fd target (writes we cannot snapshot). Matches `>`/`>>`
+  // followed by a real target, but NOT fd-dup like `2>&1`/`>&2`.
+  { re: />{1,2}\s*[^&\s]/, why: "output redirect to file" },
+  { re: /\beval\b/, why: "eval" },
+  // pipe (or command chain) feeding an interpreter/sink
+  { re: new RegExp(`\\|\\s*(sudo\\s+)?(${EXEC_SINKS})\\b`), why: "pipe into interpreter" },
+];
+
+// find/xargs with destructive actions must gate even though `find` reads.
+const FIND_DESTRUCTIVE = /\bfind\b[^|;&]*\s-(delete|exec|execdir|ok|okdir|fprint|fprintf|fls)\b/;
+
+// Read-only leading commands (per-segment).
+const SAFE_RO = [
+  /^(ls|cat|head|tail|wc|stat|file|grep|egrep|fgrep|rg|find|which|whereis|type)\b/,
+  /^(sort|uniq|cut|tr|comm|diff|jq|column|fold|nl|tac|rev)\b/,
+  /^(basename|dirname|realpath|readlink|tree|md5sum|sha1sum|sha256sum)\b/,
+  /^(ps|top -b|pgrep|pidof|lsof|ss|netstat|ip (a|addr|r|route|link)|ifconfig)\b/,
+  /^(df|du|free|uptime|uname|hostname|whoami|id|pwd|env|printenv|date|cal|locale)\b/,
+  /^(systemctl (status|list-units|list-unit-files|show|is-active|is-enabled|cat)|journalctl)\b/,
+  /^(git (status|log|diff|show|branch|remote|describe|rev-parse|ls-files|blame|tag -l|config --get))( |$)/,
+  /^(docker (ps|images|logs|inspect|version|info)|kubectl (get|describe|logs))\b/,
+  /^(echo|printf)\b/,
+  /^(apt(-get)? (list|show|search)|apt-cache\b|dpkg -l|npm (ls|view|outdated|run)|pip (list|show|freeze)|cargo (tree|--version))\b/,
+  /^(less|more|man|help|true|false|test)\b/,
+];
+
+// curl/wget are dual-use: a plain GET that prints is fine, but sending data out
+// (--data/-F/POST) or writing a file (-o/-O/-T) is not undoable => gate it.
+const NET_EXFIL = /(-X\s*(POST|PUT|DELETE|PATCH)|--data(-\w+)?|(^|\s)-d(\s|=|$)|(^|\s)-F(\s|$)|--form|--upload-file|(^|\s)-T(\s|$)|(^|\s)-[oO](\s|$)|--output)/;
+
+// Allowed but worth telling the human about (state-changing, expected).
+const NOISY_PATTERNS = [
+  /^(sudo )?apt(-get)? install\b/,
+  /^(npm (install|i|ci|update)|pnpm (install|add)|yarn( add)?|pip install|cargo install)\b/,
+  /^(sudo )?systemctl (start|stop|restart|reload|enable|disable)\b/,
+  /^git (add|commit|checkout|switch|stash|fetch|pull|merge --ff-only|init)\b/,
+  /^mkdir\b/,
+  /^(sudo )?(docker (build|pull|run|start|stop))\b/,
+];
+
+function scanDanger(cmd) {
+  for (const d of DANGER) if (d.re.test(cmd)) return d.why;
+  if (FIND_DESTRUCTIVE.test(cmd)) return "find with destructive action";
+  return null;
+}
+
+function classifySegment(seg) {
+  const s = seg.trim();
+  if (!s) return CLASS.REVERSIBLE;
+  if (/^find\b/.test(s) && FIND_DESTRUCTIVE.test(s)) return CLASS.IRREVERSIBLE;
+  if (/^(curl|wget)\b/.test(s)) return NET_EXFIL.test(s) ? CLASS.IRREVERSIBLE : CLASS.REVERSIBLE;
+  if (SAFE_RO.some((re) => re.test(s))) return CLASS.REVERSIBLE;
+  if (NOISY_PATTERNS.some((re) => re.test(s))) return CLASS.NOISY;
+  return CLASS.IRREVERSIBLE;
+}
+
+export function classifyShell(command) {
+  const cmd = (command || "").trim();
+  if (!cmd) return CLASS.REVERSIBLE;
+
+  // Step 1 — global danger scan wins over everything.
+  if (scanDanger(cmd)) return CLASS.IRREVERSIBLE;
+
+  // Step 2 — split on every separator; the whole is only as safe as its
+  // weakest segment. Splitting on `|` is safe here because pipe-into-interpreter
+  // was already caught in step 1, so remaining pipes are safe cmd -> safe cmd.
+  const segments = cmd.split(/&&|\|\||[|;&\n]/).map((s) => s.trim()).filter(Boolean);
+  const classes = segments.map(classifySegment);
+  if (classes.includes(CLASS.IRREVERSIBLE)) return CLASS.IRREVERSIBLE;
+  if (classes.includes(CLASS.NOISY)) return CLASS.NOISY;
+  return CLASS.REVERSIBLE;
+}
+
+// Human-readable reason for the shell verdict (used in journal + gate message).
+export function shellReason(command) {
+  const why = scanDanger((command || "").trim());
+  if (why) return `dangerous construct: ${why}`;
+  const c = classifyShell(command);
+  return c === CLASS.IRREVERSIBLE
+    ? "command not in the known-safe allowlist"
+    : c === CLASS.NOISY
+      ? "known state-changing command"
+      : "read-only command";
+}
+
+// Classify a tool invocation. Returns { class, reason }.
+export function classify(tool, args) {
+  switch (tool) {
+    case "fs_read":
+    case "sys_status":
+    case "journal_tail":
+    case "pending_list":
+      return { class: CLASS.REVERSIBLE, reason: "read-only" };
+    case "fs_write":
+      return { class: CLASS.REVERSIBLE, reason: "write covered by snapshot" };
+    case "fs_delete":
+      return { class: CLASS.REVERSIBLE, reason: "delete covered by snapshot" };
+    case "undo":
+      return { class: CLASS.NOISY, reason: "restores prior state" };
+    case "shell":
+      return { class: classifyShell(args.command || ""), reason: shellReason(args.command || "") };
+    default:
+      return { class: CLASS.IRREVERSIBLE, reason: "unknown tool" };
+  }
+}
