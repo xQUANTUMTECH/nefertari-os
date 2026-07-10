@@ -150,6 +150,14 @@ export function classify(tool, args) {
         : { class: CLASS.REVERSIBLE, reason: "delete covered by snapshot" };
     case "undo":
       return { class: CLASS.NOISY, reason: "restores prior state" };
+    case "timeline_checkpoint":
+    case "timeline_fork":
+      return { class: CLASS.REVERSIBLE, reason: "copies state into the timeline store, touches nothing outside it" };
+    case "timeline_restore":
+    case "timeline_promote":
+      return { class: CLASS.NOISY, reason: "rewrites the working tree (auto-checkpointed first, so itself undoable)" };
+    case "timeline_list":
+      return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "shell":
       return { class: classifyShell(args.command || ""), reason: shellReason(args.command || "") };
     default:

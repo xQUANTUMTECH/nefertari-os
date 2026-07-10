@@ -1,16 +1,20 @@
 # Nefertari OS
 
-**An AI-native system layer for Linux.** The agent is not an app — it is a first-class citizen of the machine: it can see everything, act on everything, and *every action has an undo*.
+**The first system layer built for the agent as caller, not the human as caller.** The agent is not an app — it is a first-class citizen of the machine: it gets a machine that knows itself, state it can branch on, and execution at the speed of intent instead of the speed of keystrokes.
 
 > Status: early prototype (phase 1 — `agentd` + permission broker on WSL2 / any Linux).
 
 ## The thesis
 
-Giving an AI root access takes 5 minutes. The hard problem is doing it so that:
+Every OS assumes its caller has persistent memory, near-zero cost per action, and always-on eyes. An AI agent is the exact opposite: amnesia every session, an expensive model inference per tool call, and vision limited to what it asks for. That mismatch taxes every autonomous run — re-orientation probes, one model turn per step, recomputation, single-path trial-and-error. Multiply it by a **team of agents** on one host and the taxes compound.
 
-1. **Every write action is reversible** — automatic snapshot before, one-command undo after.
-2. **Nothing irreversible happens without a human gate** — not as a convention the AI is asked to respect, but as physics of the system: the broker sits between the agent and the machine.
-3. **Everything is auditable** — an append-only journal records every action, its classification, its outcome.
+Nefertari is the layer that removes those taxes (see [docs/PERFORMANCE-TRACK.md](docs/PERFORMANCE-TRACK.md)):
+
+1. **Time as a primitive** — checkpoint a working tree, **fork it into K isolated copies** (one per strategy, or one per team member), run them in parallel, **promote** the winner. Exploration stops being sequential.
+2. **Execution at the level of intent** (next) — submit a plan, get one consolidated result inside a transaction, instead of paying one model turn per step.
+3. **A machine that knows itself** (next) — typed system state and session-over-session deltas instead of 20 probe commands.
+
+**Security is the parallel track, powered by the same machinery.** Every write is snapshotted and undoable; nothing irreversible happens without a human gate — not as a convention the AI is asked to respect, but as physics (broker + kernel enforcement); everything lands in an append-only journal. For **embodied / robotic agents** — where the world itself cannot be snapshotted — the same primitives invert: fork the world *model*, not the world, and ask the broker *before* actuating (preflight, on the roadmap).
 
 ## Architecture (phase 1)
 
@@ -73,6 +77,27 @@ closed the obvious escape routes:
 - **No-op redirects don't nag.** A redirect whose only target is `/dev/null`
   (or `/dev/stdout`/`/dev/stderr`) is a no-op, so `command -v gh 2>/dev/null`
   stays reversible instead of being gated as a "write".
+
+## Time as a primitive: checkpoint · fork · promote
+
+The performance headline (see [docs/PERFORMANCE-TRACK.md](docs/PERFORMANCE-TRACK.md)):
+the agent can branch the state of its working tree the way it branches its own
+reasoning. `snapshots` undo one action; `timeline` makes whole-tree state forkable.
+
+| Tool | What it does | Class |
+|---|---|---|
+| `timeline_checkpoint` | copy a directory tree into the timeline store (`node_modules` excluded by default, size guard `NEFERTARI_TIMELINE_MAX_MB`) | reversible |
+| `timeline_fork` | materialize **K isolated working copies** of a checkpoint — one per strategy, or one per team member | reversible |
+| `timeline_promote` | the winning fork's content becomes the working dir (current state auto-checkpointed first) | noisy |
+| `timeline_restore` | put the working dir back to a checkpoint (auto-checkpointed first, so restore is itself undoable) | noisy |
+| `timeline_list` | list checkpoints and forks | reversible |
+
+The team pattern: checkpoint once → fork ×N → each teammate works its own fork in
+parallel (no trampling, no serialization) → evaluate → promote the best → the
+losers cost nothing to throw away. Excluded dirs are left untouched by restores;
+every restore/promote is undoable via its automatic safety checkpoint. Backend is
+plain file copy (runs anywhere); the interface is stable for CoW backends
+(btrfs/ZFS/overlayfs) later.
 
 ## Kernel-enforced reversibility (pluggable)
 
@@ -204,10 +229,13 @@ no secret ever touches a command line).
   Hardened: sensitive-path gating, GET-query exfil + net allowlist, approval-queue
   cap, `/dev/null` no-op redirects. Tests: red-team 63/63, smoke 23/23, HTTP 6/6,
   enforce (live Landlock proof), real-model + Team AI runs. Public Docker image + CI.
-- **Phase 2** (started): kernel-enforced reversibility (✅ `nefertari-enforce`,
-  Landlock ABI 3, proven), Windows companion (✅ toasts + approve/deny from
-  Windows; next: UI Automation eyes/hands), NixOS-WSL custom distro with native
-  declarative rollback, and the socket-daemon form of the enforcer.
+- **Phase 2** (started) — performance track (headline): ✅ timeline
+  checkpoint/fork/restore/promote; next: plan executor (transactional intent),
+  speculative trajectories for agent teams, live world-model, `preflight` for
+  embodied/robotic agents. Parallel security track: kernel-enforced reversibility
+  (✅ `nefertari-enforce`, Landlock ABI 3, proven), Windows companion (✅ toasts +
+  approve/deny from Windows; next: UI Automation eyes/hands), NixOS-WSL custom
+  distro with native declarative rollback, socket-daemon form of the enforcer.
 - **Phase 3**: desktop control via accessibility APIs (AT-SPI / UIA / AXUIElement), local model routing, voice.
 
 ## License

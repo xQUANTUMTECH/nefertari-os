@@ -15,6 +15,7 @@ import { classify, CLASS } from "./broker.mjs";
 import { enforceWrap } from "./enforce.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
+import * as timeline from "./timeline.mjs";
 import * as approvals from "./approvals.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
@@ -151,6 +152,76 @@ server.tool(
     const restored = snapshots.restore(snapshot_id);
     record("undo", { snapshot_id }, g.cls, "ok", { restored: restored.length });
     return text({ status: "restored", snapshot_id, files: restored });
+  }
+);
+
+// ---- timeline: tree-level time the agent can branch on ----
+
+server.tool(
+  "timeline_checkpoint",
+  "Checkpoint a whole directory tree into the timeline. Returns a checkpoint_id you can fork from or restore to. Excluded dir names (default: node_modules) are skipped at any depth and left untouched by restores.",
+  {
+    dir: z.string().describe("Absolute path of the directory to checkpoint"),
+    label: z.string().optional(),
+    exclude: z.array(z.string()).optional().describe("Directory names to skip (default: ['node_modules'])"),
+  },
+  async ({ dir, label, exclude }) => {
+    const g = gate("timeline_checkpoint", { dir });
+    if (g.gated) return g.response;
+    const m = timeline.checkpoint(dir, { label, ...(exclude ? { exclude } : {}) });
+    record("timeline_checkpoint", { dir, label }, g.cls, "ok", { checkpointId: m.id, files: m.files, bytes: m.bytes });
+    return text({ status: "checkpointed", checkpoint_id: m.id, files: m.files, bytes: m.bytes });
+  }
+);
+
+server.tool(
+  "timeline_fork",
+  "Create N isolated working copies of a checkpoint (one per strategy or per team member). Each fork is a real directory you can point tools at; work in forks never touches the original tree or the other forks. Keep the best result with timeline_promote.",
+  { checkpoint_id: z.string(), n: z.number().int().min(1).max(16).default(1) },
+  async ({ checkpoint_id, n }) => {
+    const g = gate("timeline_fork", { checkpoint_id, n });
+    if (g.gated) return g.response;
+    const forks = timeline.fork(checkpoint_id, n);
+    record("timeline_fork", { checkpoint_id, n }, g.cls, "ok", { forks: forks.map((f) => f.id) });
+    return text({ status: "forked", forks: forks.map((f) => ({ fork_id: f.id, path: f.path })) });
+  }
+);
+
+server.tool(
+  "timeline_restore",
+  "Restore a directory to the state of a checkpoint. The current state is auto-checkpointed first, so the restore is itself undoable.",
+  { checkpoint_id: z.string(), dir: z.string().optional().describe("Defaults to the dir the checkpoint was taken from") },
+  async ({ checkpoint_id, dir }) => {
+    const g = gate("timeline_restore", { checkpoint_id, dir });
+    if (g.gated) return g.response;
+    const r = timeline.restoreTo(checkpoint_id, dir);
+    record("timeline_restore", { checkpoint_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
+    return text({ status: "restored", ...r });
+  }
+);
+
+server.tool(
+  "timeline_promote",
+  "Make a winning fork's content the working directory (defaults to the dir its checkpoint came from). The current state is auto-checkpointed first, so promotion is itself undoable.",
+  { fork_id: z.string(), dir: z.string().optional() },
+  async ({ fork_id, dir }) => {
+    const g = gate("timeline_promote", { fork_id, dir });
+    if (g.gated) return g.response;
+    const r = timeline.promote(fork_id, dir);
+    record("timeline_promote", { fork_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
+    return text({ status: "promoted", ...r });
+  }
+);
+
+server.tool(
+  "timeline_list",
+  "List all timeline checkpoints and forks (id, label, dir, size, created).",
+  {},
+  async () => {
+    const g = gate("timeline_list", {});
+    if (g.gated) return g.response;
+    record("timeline_list", {}, g.cls, "ok");
+    return text(timeline.list());
   }
 );
 
