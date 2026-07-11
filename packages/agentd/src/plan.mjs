@@ -80,11 +80,14 @@ export async function runPlan(dir, steps, { label = "" } = {}) {
   const results = [];
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
+    // per is full-length by contract, but a hole here must fail the step,
+    // not crash the whole plan_run call outside the transaction.
+    const stepClass = per[i]?.class ?? CLASS.IRREVERSIBLE;
     let r;
     try {
-      r = await execStep(s, per[i].class, dir);
+      r = await execStep(s, stepClass, dir);
     } catch (e) {
-      append({ tool: s.tool, args: s.args, class: per[i].class, decision: "error", outcome: String(e.message), plan: planId, step: i });
+      append({ tool: s.tool, args: s.args, class: stepClass, decision: "error", outcome: String(e.message), plan: planId, step: i });
       results.push({ step: i, tool: s.tool, ok: false, error: String(e.message) });
       return rollback(ck, dir, planId, results);
     }
@@ -92,7 +95,7 @@ export async function runPlan(dir, steps, { label = "" } = {}) {
     append({
       tool: s.tool,
       args: s.args,
-      class: per[i].class,
+      class: stepClass,
       decision: "executed",
       outcome: ok ? "ok" : `exit ${r.output.exitCode}`,
       plan: planId,

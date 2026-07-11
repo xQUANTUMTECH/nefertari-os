@@ -33,6 +33,16 @@ const bad = classifyPlan([
 ]);
 assert.equal(bad.class, CLASS.IRREVERSIBLE);
 assert.match(bad.reason, /step 1 \(shell\)/, "reason names the offending step");
+// per must cover EVERY step even when an early step is irreversible — the
+// executor reads per[i].class after the human approves the whole plan.
+const partial = classifyPlan([
+  { tool: "shell", args: { command: "git config user.name 'X'" } },
+  { tool: "shell", args: { command: "git add -A" } },
+  { tool: "fs_write", args: { path: "/x" } },
+]);
+assert.equal(partial.class, CLASS.IRREVERSIBLE);
+assert.equal(partial.per.length, 3, "per is full-length past the first irreversible step");
+assert.ok(partial.per.every((p) => p && p.class), "every per entry is classified");
 assert.equal(classifyPlan([]).class, CLASS.IRREVERSIBLE, "empty plan gated");
 assert.equal(classifyPlan([{ tool: "undo", args: {} }]).class, CLASS.IRREVERSIBLE, "undo not allowed in a plan");
 assert.equal(classifyPlan([{ tool: "plan_run", args: {} }]).class, CLASS.IRREVERSIBLE, "no plan nesting");

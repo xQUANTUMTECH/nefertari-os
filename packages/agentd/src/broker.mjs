@@ -142,6 +142,8 @@ export const PLAN_TOOLS = ["fs_read", "fs_write", "fs_delete", "shell"];
 export function classifyPlan(steps) {
   if (!Array.isArray(steps) || steps.length === 0)
     return { class: CLASS.IRREVERSIBLE, reason: "empty or malformed plan", per: [] };
+  // No early return: per[] must cover EVERY step — the executor reads
+  // per[i].class after the gate, so a partial per crashes the plan mid-run.
   const per = [];
   let worst = CLASS.REVERSIBLE;
   let reason = `all ${steps.length} steps reversible`;
@@ -151,9 +153,10 @@ export function classifyPlan(steps) {
       ? classify(s.tool, s.args || {})
       : { class: CLASS.IRREVERSIBLE, reason: `tool not allowed inside a plan: ${s.tool}` };
     per.push(c);
-    if (c.class === CLASS.IRREVERSIBLE)
-      return { class: CLASS.IRREVERSIBLE, reason: `step ${i} (${s.tool}): ${c.reason}`, per };
-    if (c.class === CLASS.NOISY && worst === CLASS.REVERSIBLE) {
+    if (c.class === CLASS.IRREVERSIBLE && worst !== CLASS.IRREVERSIBLE) {
+      worst = CLASS.IRREVERSIBLE;
+      reason = `step ${i} (${s.tool}): ${c.reason}`;
+    } else if (c.class === CLASS.NOISY && worst === CLASS.REVERSIBLE) {
       worst = CLASS.NOISY;
       reason = `step ${i} (${s.tool}): ${c.reason}`;
     }
