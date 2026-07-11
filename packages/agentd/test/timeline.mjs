@@ -71,6 +71,21 @@ promote(eforks[0].id);
 assert.equal(fs.readFileSync(path.join(empty, "hero.md"), "utf8"), "H", "promote from empty checkpoint works");
 console.log("  ok — empty dir: checkpoint / fork / promote all work");
 
+// -- restore over a read-only destination (Windows: git marks .git/objects
+// read-only, so a tree containing a repo would EPERM on every restore/promote) --
+const rodir = fs.mkdtempSync(path.join(os.tmpdir(), "nef-tl-ro-"));
+fs.writeFileSync(path.join(rodir, "obj.bin"), "V1");
+fs.chmodSync(path.join(rodir, "obj.bin"), 0o444);
+const rck = checkpoint(rodir, { label: "ro" });
+fs.chmodSync(path.join(rodir, "obj.bin"), 0o644);
+fs.writeFileSync(path.join(rodir, "obj.bin"), "V2");
+fs.chmodSync(path.join(rodir, "obj.bin"), 0o444);
+restoreTo(rck.id, rodir);
+assert.equal(fs.readFileSync(path.join(rodir, "obj.bin"), "utf8"), "V1", "read-only destination overwritten on restore");
+fs.chmodSync(path.join(rodir, "obj.bin"), 0o644);
+fs.rmSync(rodir, { recursive: true, force: true });
+console.log("  ok — restore overwrites read-only destinations (git objects on Windows)");
+
 // -- size guard --
 process.env.NEFERTARI_TIMELINE_MAX_MB = "1";
 w("big.bin", "x".repeat(2 * 1024 * 1024));

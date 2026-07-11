@@ -54,7 +54,16 @@ function copyFiles(srcRoot, dstRoot, files) {
   for (const r of files) {
     const dst = path.join(dstRoot, r);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
-    fs.copyFileSync(path.join(srcRoot, r), dst);
+    try {
+      fs.copyFileSync(path.join(srcRoot, r), dst);
+    } catch (e) {
+      // Windows refuses to overwrite read-only destinations with EPERM —
+      // git marks .git/objects/* read-only, so any tree containing a repo
+      // would brick restore/promote. Clear the bit and retry once.
+      if (e.code !== "EPERM" && e.code !== "EACCES") throw e;
+      fs.chmodSync(dst, 0o644);
+      fs.copyFileSync(path.join(srcRoot, r), dst);
+    }
   }
 }
 
