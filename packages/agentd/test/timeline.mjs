@@ -61,6 +61,16 @@ assert.equal(r("a.txt"), "A1", "promotion undone via its safety checkpoint");
 assert.ok(!fs.existsSync(path.join(work, "winner.txt")));
 console.log("  ok — promote applied the winner; safety checkpoint undid it");
 
+// -- empty tree is a valid checkpoint (fresh workspace) --
+const empty = fs.mkdtempSync(path.join(os.tmpdir(), "nef-tl-empty-"));
+const eck = checkpoint(empty, { label: "empty" });
+assert.equal(eck.files, 0, "empty checkpoint has 0 files");
+const eforks = fork(eck.id, 2);
+fs.writeFileSync(path.join(eforks[0].path, "hero.md"), "H");
+promote(eforks[0].id);
+assert.equal(fs.readFileSync(path.join(empty, "hero.md"), "utf8"), "H", "promote from empty checkpoint works");
+console.log("  ok — empty dir: checkpoint / fork / promote all work");
+
 // -- size guard --
 process.env.NEFERTARI_TIMELINE_MAX_MB = "1";
 w("big.bin", "x".repeat(2 * 1024 * 1024));
@@ -80,7 +90,7 @@ console.log("  ok — broker: checkpoint/fork/list reversible, restore/promote n
 // -- listing --
 const all = list();
 assert.ok(all.filter((m) => m.kind === "checkpoint").length >= 3, "t0 + safety checkpoints listed");
-assert.equal(all.filter((m) => m.kind === "fork").length, 3);
+assert.equal(all.filter((m) => m.kind === "fork").length, 5); // 3 strategy forks + 2 empty-tree forks
 console.log("  ok — list shows checkpoints and forks");
 
 fs.rmSync(work, { recursive: true, force: true });

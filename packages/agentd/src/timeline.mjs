@@ -87,6 +87,7 @@ export function checkpoint(dir, { label = "", exclude = DEFAULT_EXCLUDE, meta = 
 
   const id = newId("ckpt");
   const base = ckptDir(id);
+  fs.mkdirSync(path.join(base, "tree"), { recursive: true }); // empty trees are valid checkpoints
   copyFiles(src, path.join(base, "tree"), files);
   const manifest = {
     id,
@@ -113,6 +114,7 @@ export function fork(checkpointId, n = 1) {
     const id = newId("fork");
     const base = forkDir(id);
     const tree = path.join(base, "tree");
+    fs.mkdirSync(tree, { recursive: true }); // empty trees are valid forks
     copyFiles(srcTree, tree, files);
     const manifest = { id, kind: "fork", from: checkpointId, path: tree, createdAt: new Date().toISOString() };
     fs.writeFileSync(path.join(base, "manifest.json"), JSON.stringify(manifest, null, 2));
