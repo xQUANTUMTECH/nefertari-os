@@ -2,11 +2,28 @@
 # Runs `nefertari serve`: the HTTP gate over the same broker/journal/snapshot core.
 # The MCP stdio server (src/server.mjs) is used by a co-located agent; this image
 # exposes the human-gate control plane so approvals work without a shell.
+#
+# BUILD CONTEXT IS THE REPOSITORY ROOT, not this directory, because the image
+# carries the Landlock enforcer built from packages/enforce:
+#
+#   docker build -f packages/agentd/Dockerfile -t nefertari-agentd .
+#
+# docker-compose.yml in this directory already sets that context.
+
+# ---- enforce: the Landlock binary that makes reversibility a kernel fact ----
+# Without this stage the image ships with no enforcer, the landlock driver finds
+# nothing and silently degrades to fail-open — the container would classify
+# actions as reversible without anything holding the command to it.
+FROM rust:slim AS enforce
+WORKDIR /build
+COPY packages/enforce/Cargo.toml packages/enforce/Cargo.lock ./
+COPY packages/enforce/src ./src
+RUN cargo build --release
 
 # ---- deps: install production node_modules against the lockfile ----
 FROM node:20-slim AS deps
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY packages/agentd/package.json packages/agentd/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # ---- runtime: minimal, non-root, healthchecked ----
@@ -23,13 +40,21 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
-COPY package.json ./
-COPY src ./src
+COPY packages/agentd/package.json ./
+COPY packages/agentd/src ./src
+
+# The landlock driver resolves this path with no configuration (third fallback
+# in src/enforce.mjs). Landlock is unprivileged and works inside an ordinary
+# container: verified on Docker Desktop / WSL2 at ABI 3, no seccomp exemption
+# and no added capabilities. Requires a Linux kernel >= 5.13 under the runtime,
+# which Docker Desktop provides on Windows and macOS alike.
+COPY --from=enforce /build/target/release/nefertari-enforce /usr/local/bin/nefertari-enforce
 
 # Non-root runtime user; /data holds the journal, pending queue and snapshots.
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/nefertari --shell /usr/sbin/nologin nefertari \
  && mkdir -p /data \
- && chown -R nefertari:nefertari /data /app
+ && chown -R nefertari:nefertari /data /app \
+ && chmod 0755 /usr/local/bin/nefertari-enforce
 USER nefertari
 VOLUME ["/data"]
 EXPOSE 7343

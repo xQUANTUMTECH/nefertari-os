@@ -4,7 +4,10 @@
 #   curl -H "Authorization: Bearer $NEFERTARI_TOKEN" localhost:7343/pending
 services:
   agentd:
-    build: .
+    build:
+      # repo root: the image also builds packages/enforce (Landlock binary)
+      context: ../..
+      dockerfile: packages/agentd/Dockerfile
     image: ghcr.io/xquantumtech/nefertari-agentd:latest
     ports:
       - "7343:7343"
