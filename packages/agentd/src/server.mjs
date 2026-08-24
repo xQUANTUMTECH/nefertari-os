@@ -359,6 +359,19 @@ server.tool(
 );
 
 server.tool(
+  "journal_verify",
+  "Check that the audit trail has not been altered. Every entry carries the hash of the one before it, so editing, deleting, reordering or inserting an entry breaks the chain at a line this names. Tamper-EVIDENT, not tamper-proof: whoever owns the file can still rewrite the chain from the edit onward — a signature and an external anchor are what close that, and both build on this.",
+  {},
+  async () => {
+    const g = gate("journal_verify", {});
+    if (g.gated) return g.response;
+    const v = journal.verify();
+    record("journal_verify", {}, g.cls, v.ok ? `intact (${v.checked} entries)` : `BROKEN at line ${v.broken.line}`);
+    return text(v);
+  }
+);
+
+server.tool(
   "working_set",
   "What THIS workspace has already been through, replayed from the journal: the files read, written and deleted, the commands run, and — the part worth the call — which of those files CHANGED underneath since the last action recorded against them. Call it first in a resumed session instead of re-exploring with ls/find/cat: one call in place of the probe commands, and it names where a stale assumption is about to cost a wrong edit. Only records what went through Nefertari; work done outside it leaves no trace and the answer says so.",
   {
