@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { TIMELINE_DIR, ensureHome } from "./paths.mjs";
 import { newId } from "./journal.mjs";
+import * as speculate from "./speculate.mjs";
 
 // Directory names never copied into a checkpoint. These are reproducible from a
 // manifest and dwarf the source they belong to, so copying them K times would
@@ -201,8 +202,30 @@ export function checkpoint(dir, { label = "", exclude = DEFAULT_EXCLUDE, meta = 
 
   const id = newId("ckpt");
   const base = ckptDir(id);
-  fs.mkdirSync(path.join(base, "tree"), { recursive: true }); // empty trees are valid checkpoints
-  materialize(src, path.join(base, "tree"), entries);
+  const treeDir = path.join(base, "tree");
+  fs.mkdirSync(base, { recursive: true });
+
+  // A copy made during the last inference window, if there is one for this
+  // directory. It is offered per file: only those provably untouched since the
+  // pre-build began are taken, and everything else is copied here and now. The
+  // work saved is real; the risk of adopting something stale is not taken.
+  const claimed = speculate.claim(src, exclude);
+  let reused = 0;
+  if (claimed) {
+    fs.renameSync(claimed.tree, treeDir); // same filesystem: the whole tree, instantly
+    // The shadow can hold files the working dir has since lost. They are in
+    // neither list, so they are swept rather than silently checkpointed as
+    // present.
+    const known = new Set([...claimed.reuse, ...claimed.restale].map((e) => e.rel));
+    for (const e of walk(treeDir, [])) {
+      if (!known.has(e.rel)) fs.rmSync(path.join(treeDir, e.rel), { force: true });
+    }
+    materialize(src, treeDir, claimed.restale);
+    reused = claimed.reuse.length;
+  } else {
+    fs.mkdirSync(treeDir, { recursive: true }); // empty trees are valid checkpoints
+    materialize(src, treeDir, entries);
+  }
   const links = entries.filter((e) => e.type === "link").length;
   const manifest = {
     id,
@@ -213,6 +236,7 @@ export function checkpoint(dir, { label = "", exclude = DEFAULT_EXCLUDE, meta = 
     files: entries.length - links,
     links,
     bytes,
+    ...(claimed ? { speculated: reused, copied: claimed.restale.length } : {}),
     createdAt: new Date().toISOString(),
     meta,
   };

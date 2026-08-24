@@ -4,6 +4,7 @@
 // every write is snapshotted; irreversible actions wait for the human gate.
 
 import fs from "node:fs";
+import nodePath from "node:path";
 import os from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -15,6 +16,7 @@ import { workingSet } from "./workingset.mjs";
 import * as egress from "./egress.mjs";
 import * as localmodel from "./localmodel.mjs";
 import * as idle from "./idle.mjs";
+import * as speculate from "./speculate.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as timeline from "./timeline.mjs";
@@ -59,6 +61,9 @@ const MAX_PENDING = Number(process.env.NEFERTARI_MAX_PENDING) || 25;
 // or a pending_approval response the tool must return as-is.
 function gate(tool, args) {
   idle.enter();
+  // Real work has arrived: whatever was being prepared stops now. Speculation
+  // that competed with the call it was preparing for would be worse than none.
+  speculate.windowClose();
   const { class: cls, reason } = classify(tool, args);
   if (cls === CLASS.IRREVERSIBLE) {
     if (!approvals.consumeApproval(tool, args)) {
@@ -100,6 +105,11 @@ function record(tool, args, cls, outcome, extra = {}) {
   // because the journal is where anything richer can be computed from later,
   // and because a share nobody can recompute is a share nobody believes.
   journal.append({ tool, args, class: cls, decision: "executed", outcome, ...extra, ...idle.exit() });
+  // The window opens here. The directory worth preparing is the one this action
+  // just touched: the next expensive thing an agent does to a tree is almost
+  // always to a tree it is already working in.
+  const hint = args?.dir || args?.cwd || (typeof args?.path === "string" ? nodePath.dirname(args.path) : null);
+  if (hint) speculate.windowOpen(hint);
 }
 
 // ---------- tools ----------

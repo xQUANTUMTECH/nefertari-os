@@ -23,7 +23,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 if [ "$#" -gt 0 ]; then
   TESTS=("$@")
 else
-  TESTS=(timeline timeline-links planshape workingset egress journal-chain idle cgroups inferd plan trajectories enforce smoke http ocs e2e e2e-hard redteam)
+  TESTS=(timeline timeline-links speculate planshape workingset egress journal-chain idle cgroups inferd plan trajectories enforce smoke http ocs e2e e2e-hard redteam)
 fi
 
 FAILED=()
