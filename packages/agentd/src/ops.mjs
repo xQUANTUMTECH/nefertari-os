@@ -10,10 +10,20 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import * as snapshots from "./snapshots.mjs";
 import { enforceWrap } from "./enforce.mjs";
+import * as egress from "./egress.mjs";
 
 export function opFsRead({ path: p }) {
   const data = fs.readFileSync(p, "utf8");
-  return { output: data, meta: { bytes: data.length } };
+  // The context boundary sits here rather than at the outbound API call, which
+  // is not ours to see. What the agent never reads, it cannot forward.
+  const s = egress.screen(data, { source: "fs_read", path: p });
+  return {
+    output: s.content,
+    meta: {
+      bytes: s.content.length,
+      ...(s.findings.length ? { egress: s.verdict, withheld: s.findings.length, kinds: [...new Set(s.findings.map((f) => f.kind))] } : {}),
+    },
+  };
 }
 
 export function opFsWrite({ path: p, content }) {
@@ -42,9 +52,18 @@ export function opShell({ command, cwd }, cls) {
   const { file, args: execArgs, enforced, driver } = enforceWrap(command, { cls, cwd: workdir });
   return new Promise((resolve) => {
     execFile(file, execArgs, { cwd: workdir, timeout: 120000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      // A command's output reaches the context exactly like a file's contents —
+      // `cat .env`, `env`, `git remote -v` — so it is screened the same way.
+      const so = egress.screen(String(stdout), { source: "shell", path: workdir });
+      const se = egress.screen(String(stderr), { source: "shell", path: workdir });
+      const found = [...so.findings, ...se.findings];
       resolve({
-        output: { exitCode: err ? (err.code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr) },
-        meta: { enforced: !!enforced, driver },
+        output: { exitCode: err ? (err.code ?? 1) : 0, stdout: so.content, stderr: se.content },
+        meta: {
+          enforced: !!enforced,
+          driver,
+          ...(found.length ? { egress: so.verdict === "clean" ? se.verdict : so.verdict, withheld: found.length, kinds: [...new Set(found.map((f) => f.kind))] } : {}),
+        },
       });
     });
   });

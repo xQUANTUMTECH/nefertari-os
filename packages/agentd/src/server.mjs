@@ -3,6 +3,7 @@
 // Every tool call flows through the permission broker; every action is journaled;
 // every write is snapshotted; irreversible actions wait for the human gate.
 
+import fs from "node:fs";
 import os from "node:os";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -11,6 +12,8 @@ import { z } from "zod";
 import { classify, CLASS, PLAN_TOOLS } from "./broker.mjs";
 import { normalizeSteps, normalizeTrajectories } from "./planshape.mjs";
 import { workingSet } from "./workingset.mjs";
+import * as egress from "./egress.mjs";
+import * as localmodel from "./localmodel.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as timeline from "./timeline.mjs";
@@ -301,6 +304,57 @@ server.tool(
     const r = timeline.promote(fork_id, dir);
     record("timeline_promote", { fork_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
     return text({ status: "promoted", ...r });
+  }
+);
+
+server.tool(
+  "egress_check",
+  "Ask whether content is safe to bring into your context BEFORE you read it. Everything you read is sent to a third-party model API on your next turn, so a secret you read is a secret you have forwarded. Give a path (the file is examined here and its contents are NOT returned) or inline content. Returns credential-shaped matches found by pattern, plus — when this host runs a local model — a judgement on the sensitivity patterns cannot see (personal data, customer names, internal hostnames, unreleased business information). That judgement is made ON THIS MACHINE: asking a remote model whether something may leave would be sending it.",
+  {
+    path: z.string().optional().describe("File to examine; its contents are never returned"),
+    content: z.string().optional().describe("Inline content to examine instead of a path"),
+    question: z.string().optional().describe("What you intend to do with it, to sharpen the judgement"),
+  },
+  async ({ path: p, content, question }) => {
+    const g = gate("egress_check", { path: p });
+    if (g.gated) return g.response;
+    let subject = content;
+    if (subject === undefined) {
+      if (!p) return text({ status: "invalid", error: "give either path or content" });
+      try {
+        subject = fs.readFileSync(p, "utf8");
+      } catch (e) {
+        return text({ status: "invalid", error: String(e.message) });
+      }
+    }
+    // Screened with masking forced on, whatever the deployment mode: this tool
+    // reports on content, it never becomes a way to print it.
+    const prevMode = process.env.NEFERTARI_EGRESS;
+    process.env.NEFERTARI_EGRESS = "redact";
+    let scan;
+    try {
+      scan = egress.screen(subject, { source: "egress_check", path: p || null });
+    } finally {
+      if (prevMode === undefined) delete process.env.NEFERTARI_EGRESS;
+      else process.env.NEFERTARI_EGRESS = prevMode;
+    }
+    const judgement = await egress.judge(subject, { question });
+    const model = await localmodel.info();
+    const result = {
+      path: p || null,
+      bytes: subject.length,
+      credential_patterns: scan.findings,
+      judgement,
+      local_model: model.driver,
+      // Said plainly, because "no findings" and "nothing looked" must never
+      // read the same way to a model deciding whether to open a file.
+      note:
+        judgement === null
+          ? "No local model on this host: only credential PATTERNS were checked. Sensitivity beyond those shapes was not assessed."
+          : undefined,
+    };
+    record("egress_check", { path: p }, g.cls, `${scan.findings.length} pattern(s), judgement ${judgement ? (judgement.sensitive ? "SENSITIVE" : "SAFE") : "none"}`);
+    return text(result);
   }
 );
 

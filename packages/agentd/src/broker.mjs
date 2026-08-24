@@ -198,6 +198,7 @@ export function classify(tool, args) {
   switch (tool) {
     case "fs_read":
     case "working_set":
+    case "egress_check":
     case "sys_status":
     case "journal_tail":
     case "pending_list":
