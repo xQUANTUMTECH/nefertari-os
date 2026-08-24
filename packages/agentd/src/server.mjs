@@ -453,4 +453,8 @@ server.tool(
   async () => text(approvals.listPending())
 );
 
+// Always stdio. When the agent owns this process that is its pipe; under
+// `nefertari mcp-socket` it is the accepted connection, handed over as stdin and
+// stdout by the listener. Nothing here needs to know which, and that is why the
+// socket mode required no changes to this file.
 await server.connect(new StdioServerTransport());

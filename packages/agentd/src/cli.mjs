@@ -52,6 +52,17 @@ switch (cmd) {
     serve();
     break;
   }
+  case "mcp-socket": {
+    const sock = rest[0];
+    if (!sock) {
+      print("usage: nefertari mcp-socket <path>");
+      process.exit(2);
+    }
+    const { listen } = await import("./mcpsocket.mjs");
+    await listen(sock);
+    print(`agentd listening on ${sock} (0600). One agent at a time; the daemon outlives its client.`);
+    break;
+  }
   default:
     print(`nefertari — human gate CLI
 
@@ -62,5 +73,8 @@ Usage:
   nefertari journal [n]       tail the action journal
   nefertari snapshots         list snapshots
   nefertari undo <snap_id>    restore a snapshot
-  nefertari serve             headless approval API over HTTP (containers/Railway)`);
+  nefertari serve             headless approval API over HTTP (containers/Railway)
+  nefertari mcp-socket <p>    serve MCP on a local socket, so the agent connects
+                              instead of owning the daemon (required before the
+                              agent itself can be confined)`);
 }
