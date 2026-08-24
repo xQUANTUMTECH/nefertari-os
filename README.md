@@ -1,11 +1,12 @@
 # Nefertari OS
 
-**The first system layer built for the agent as caller, not the human as caller.** The agent is not an app — it is a first-class citizen of the machine: full OS access at intent-speed, a live world it doesn’t rediscover every turn, forkable time, and continuity (self-wake, journal, deltas) — without dumping the whole machine into the prompt.
+**A system layer built for the agent as caller, not the human as caller.** The agent is not an app — it is a first-class citizen of the machine: full OS access at intent-speed, a live world it doesn’t rediscover every turn, forkable time, and continuity (self-wake, journal, deltas) — without dumping the whole machine into the prompt.
 
 > Status: early prototype — `agentd` + broker + timeline/plan/trajectories.
 > Runs wherever Docker runs: enforcement is real **inside the container**, so macOS and Windows get it
 > through Docker Desktop, not just Linux natively (verified at Landlock ABI 3, unprivileged, no seccomp
 > exemption). Any MCP client drives it — Claude Code, Codex, Hermes Agent, ania, your own loop.  
+> Numbers: [docs/BENCHMARK.md](docs/BENCHMARK.md) — measured on cheap models, verdict read from the filesystem.  
 > Thesis: [docs/VISION.md](docs/VISION.md) · Proportionality: [docs/PROPORTIONALITY.md](docs/PROPORTIONALITY.md) · Neural tissue (NexusDB/Hebbian): [docs/NEURAL-LAYER-NEXUSDB.md](docs/NEURAL-LAYER-NEXUSDB.md)
 
 ## The thesis
@@ -222,6 +223,60 @@ Nefertari classifies *and* the kernel holds the line. Honest scope: Landlock ABI
 egress stays the broker's job (use the `landrun`/`custom` drivers if you need
 kernel-level network rules too). If the selected driver is unavailable, agentd
 fails open to plain `bash` unless `NEFERTARI_ENFORCE=1` forces fail-closed.
+
+## Driving it from your own loop
+
+Nothing here is specific to one client. `agentd` is an MCP server over stdio, so
+anything that speaks MCP is already a caller: Claude Code, Codex, Hermes Agent,
+`langchain-mcp-adapters`, or forty lines of your own.
+
+The shortest complete example is not a snippet in this file — it is
+[`examples/bench-on-nefertari.mjs`](packages/agentd/examples/bench-on-nefertari.mjs),
+which connects with the plain MCP SDK, converts the tool list into
+OpenAI-shaped function definitions, and drives any `/v1/chat/completions`
+endpoint round the loop. It is not illustrative code: it is what produces
+[the benchmark numbers](docs/BENCHMARK.md), so it is exercised end to end every
+time they are reproduced, against three different models.
+
+Deliberately not included: a framework-specific example nobody here has run.
+An example that does not work costs more trust than it buys.
+
+## What else is in here
+
+Four things that are not primitives but that the primitives turned out to need.
+
+**The context boundary.** Everything an agent reads is sent to a third-party API
+on its next turn, so the context IS the exfiltration channel — by construction,
+not by attack. The enforceable point is not the outbound call, which `agentd`
+never sees, but what enters the context: `fs_read` and shell output are screened,
+and a secret the agent never saw cannot be forwarded by it. Credential shapes are
+masked by pattern always; a **local** model judges the sensitivity patterns
+cannot describe, because asking a remote model whether something may leave would
+be sending it. `NEFERTARI_EGRESS=redact|warn|refuse|off`.
+
+**A journal that can be a witness.** When the caller is human, the record is
+corroborated by the human: they testify. An agent cannot. So entries are
+hash-chained — editing, deleting, reordering or inserting one breaks the chain at
+a line `journal_verify` names. Tamper-evident, not tamper-proof: a signature and
+an external anchor are what close that, and both build on this.
+
+**`working_set`.** The journal already records every file read, written and
+deleted. Replayed, it is the answer a resuming session actually needs — not
+"what is here" but **what moved while I was gone**: a file whose mtime is newer
+than the last action recorded against it was changed by someone else, and that
+is where a stale assumption is about to cost a wrong edit.
+
+**The inference window.** After every tool call the machine does nothing for
+seconds while the model thinks — measured at 99–100% of a multi-step run, and
+`agentd` is the only process that sees both edges of it. The checkpoint's copy is
+made there instead: **103ms cold, 9ms prepared**. A pre-built copy is adopted per
+file only where that file's mtime is strictly older than the moment the pre-build
+began; everything else is copied for real. A speculative optimisation must never
+be able to produce a wrong answer, only a useless one.
+
+Each degrades to nothing on hosts that cannot support it — cgroups need Linux and
+a delegated subtree, the local model is optional — and says so rather than
+pretending.
 
 ## Quick start
 
