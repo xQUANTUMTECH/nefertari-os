@@ -106,8 +106,24 @@ Tre differenze da RAG, e sono quelle che contano:
 
 **E il pager è il modello locale.** È la cosa che può leggere 10 MB e decidere quali 2 KB contano,
 **senza che quei 10 MB lascino la macchina**. Confine di egress e pager del contesto sono lo stesso
-primitivo: qualcosa di locale che legge molto ed emette poco. Il componente costruito il 24 agosto
-(`localmodel.mjs` + `egress.mjs`) serve a entrambi.
+primitivo: qualcosa di locale che legge molto ed emette poco.
+
+⚠️ **Ma non un server di chat.** Ollama, LM Studio e simili sono la forma sbagliata per un componente
+OS: caricano il modello a richiesta e lo scaricano dopo il keep-alive (un cold start da secondi è
+fatale per una guardia chiamata a *ogni* lettura), pagano HTTP e JSON per chiamata quando le chiamate
+sono centinaia per run, **non danno controllo sullo scheduling** — non puoi dirgli "gira in
+`SCHED_IDLE` dentro la finestra di inferenza e fatti preemptare quando arriva un tool call vero", che
+è esattamente H1 — né sulla residenza in memoria. E sono un demone in più da installare: un OS che
+chiede di installare prima un server di chat non è un OS.
+
+**La forma giusta è inferenza embedded nel supervisor privilegiato in Rust** (§6): llama.cpp come
+libreria, GGUF in mmap, modello residente, niente HTTP. Modelli da 0,5–2B quantizzati, ~700 MB in
+mmap: per classificare *"è una credenziale"* o *"quali 2 KB contano"* non serve un 8B, e su CPU non
+ruba la GPU a nessuno. Sta nello stesso componente che deve comunque essere Rust e privilegiato perché
+possiede chiavi e policy — **chi decide cosa può uscire è chi tiene le chiavi**.
+
+I driver HTTP costruiti il 24 agosto (`localmodel.mjs`: openai-compatible, ollama, llamacpp, http)
+restano come **via di fuga e banco di prova**, non come default.
 
 **Vincolo onesto:** la finestra vera è posseduta dal client (Claude Code, Hermes, il loop custom), non
 da `agentd`. Nefertari non può fare eviction dalla finestra altrui. Ma può controllare **cosa
@@ -117,6 +133,55 @@ handle invece di corpi*. Forma concreta dei tool: `fs_read` restituisce handle +
 corpo supera il budget; `expand(handle, regione)` fa il fault-in della parte che serve davvero.
 
 ---
+
+## 3-bis. Computer use: lo schermo come seam, e il caso che rompe la tesi
+
+Vedere lo schermo e agirci è la capacità che serve quando il lavoro non passa da un file o da un
+comando — un pannello web senza API, un'app desktop, una dashboard. `gemma-gem` mostra la forma
+funzionante: screenshot più albero DOM, un modello che decide, click e JavaScript come azioni.
+
+Ma innestarlo qui non è "aggiungere un tool screenshot", perché **il computer use è il caso che rompe
+la tesi di Nefertari**, ed è esattamente per questo che va risolto qui e non in un'estensione a parte.
+
+**Il problema.** Tutto in Nefertari poggia su *snapshot prima, azione poi, rollback se serve*. Una
+pagina web non è snapshottabile. Un click su "Elimina account" non ha un undo handle. Il filesystem è
+reversibile per costruzione; **il mondo no**.
+
+**La risposta è già in roadmap, sotto un altro nome.** È il caso robotico: dove il mondo non si può
+snapshottare, si inverte il primitivo — si forka il *modello* del mondo, non il mondo, e si chiede al
+broker **prima** di attuare. `preflight(azione) → {classe, gate?, undo_via?}`. **Computer use e
+robotica sono lo stesso problema**, e il computer use è la metà software con cui si può iniziare
+domani: stesso classificatore, stesso gate, stesso journal, e un dominio dove sbagliare costa un form
+compilato male invece di un braccio meccanico.
+
+**Cosa classifica il broker su un'azione di schermo.** Non l'azione in astratto ma il bersaglio: il
+testo dell'elemento, il suo ruolo, l'host della pagina. Un click su un link è reversibile; un click su
+un bottone il cui nome contiene *delete / pay / send / confirm* è irreversibile e va al gate umano
+prima di partire. E — lezione già imparata altrove — vanno nominate **tutte le strade allo stesso
+effetto**: un form si invia anche premendo Invio in un campo qualsiasi, quindi una regola che blocca
+solo il bottone non blocca niente.
+
+**Lo schermo è il flusso più sensibile che esista**, ed è qui che il tier locale (§3) smette di essere
+un'opzione. Un sensore che manda pixel a un'API di terzi è invendibile a qualunque azienda; uno il cui
+primo lettore è un modello **sulla macchina** è installabile. Il valore di `gemma-gem` come driver è
+precisamente questo: il modello sta nel browser, quindi pagina e screenshot vengono classificati senza
+uscire. E lo schermo è anche il caso peggiore per la residenza: un frame costa migliaia di token, e
+tenerne dieci in finestra significa ri-pagarli a ogni turno — quindi il pager di §3 non è
+un'ottimizzazione, è il solo modo di reggerlo.
+
+**Forma concreta:** un seam `screen` con driver, come `enforce` e `localmodel`.
+
+| Driver | Cosa |
+|---|---|
+| `cdp` | Chrome DevTools Protocol / Playwright — headless o browser vero |
+| `extension` | ponte con un'estensione stile `gemma-gem`, modello in-browser |
+| `native` | schermo dell'host (X11/Wayland/Windows) per le app desktop |
+| `screenpipe` | cattura continua guidata da eventi OS, screenshot + albero di accessibilità |
+| `null` | nessuno schermo — default |
+
+Il seam consuma l'albero di accessibilità **prima** dei pixel: è strutturato, è cento volte più
+economico in token, ed è l'unico modo di scrivere una policy su un elemento invece che su una regione
+di immagine. I pixel servono come ripiego, non come formato primario.
 
 ## 4. I vettori strutturali che mancavano
 
@@ -253,6 +318,14 @@ init proprio (systemd resta).
 - [ ] **Scheduler a budget token** *(2 settimane)* — §4.2
 - [ ] **H2 fork overlayfs + upper tmpfs** *(2–3 settimane)* — sblocca anche gli errori con write-set
 - [ ] **Contesto virtuale**: handle + fault-in + budget, con il modello locale come pager *(§3)*
+- [ ] **Seam `screen` con driver** (cdp / extension stile gemma-gem / native / screenpipe) + **classi
+      d'azione sullo schermo** nel broker: click su elemento il cui nome dice *delete/pay/send/confirm*
+      → irreversibile → gate. Nominare **tutte** le strade allo stesso effetto (Invio in un campo invia
+      il form quanto il bottone). Consumare l'albero di accessibilità **prima** dei pixel *(§3-bis)*
+- [ ] **`preflight(azione)`** — dove il mondo non è snapshottabile si chiede prima di attuare. Stesso
+      primitivo per computer use e robotica *(§3-bis)*
+- [ ] **Inferenza embedded** (llama.cpp come libreria nel supervisor Rust) al posto dei driver HTTP
+      come default *(§3)*
 - [ ] **Secret broker con egress proxy** *(3–4 settimane)* — §4.1, il valore/sforzo più alto
 - [ ] **Postcondizioni (T6) e webhook** — un piano che ritenta o devia senza tornare al modello
 - [ ] **Supervisor privilegiato in Rust** + **BPF LSM** (via Aya) — la radice di fiducia
