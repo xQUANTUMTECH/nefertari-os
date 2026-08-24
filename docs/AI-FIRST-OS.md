@@ -261,6 +261,25 @@ agenti in competizione, e il benchmark va fatto lì o il numero è un imbroglio.
 CPU, RAM intatta, ripresa in millisecondi. Primo mattone del processo-agente sospendibile.
 *Numero:* agente al gate = 0 CPU, approve→ripresa <100 ms.
 
+### ⚠️ Buco aperto: l'hardware qui è quasi solo CPU
+
+H1–H4 parlano di CPU e page cache. Sono le due risorse che la mediazione totale rende schedulabili
+per prime, ma non sono le uniche, e trattarle come se lo fossero è un limite del capitolo, non della
+tesi. Non ancora affrontati:
+
+- **La GPU.** Per un OS che fa girare inferenza locale è *la* risorsa contesa: il modello locale, un
+  eventuale modello di visione per il computer use, e qualunque cosa l'agente stesso costruisca se la
+  giocano. Il kernel non ha un `cpu.idle` per la GPU — il tempo GPU non si preempta come quello CPU, e
+  MPS/MIG su NVIDIA sono partizionamento statico, non scheduling. Va capito cosa esiste davvero
+  (cgroup v2 non copre la GPU; `nvidia-cgroup`/DRM scheduling sono parziali) prima di promettere
+  qualcosa.
+- **La memoria sotto pressione.** `memory.high` e PSI esistono, e un OS con N agenti più un modello
+  residente li vuole entrambi. Oggi non li tocchiamo.
+- **Il disco.** `io.weight` e `io.latency` per non far affamare il lavoro vero dalle copie
+  speculative — che è esattamente ciò che H2 e la speculazione producono.
+- **La rete.** Non solo come confine (BPF egress) ma come risorsa: il flusso di inferenza è il "bus di
+  sistema" di questa macchina, e compete con il traffico bulk dei tool.
+
 **Bocciati con motivazione:** CRIU (astrazione sbagliata: lo stato vero è journal+timeline+contesto,
 non l'immagine di un loop Node) · io_uring (batcha syscall quando il collo è l'inferenza; `plan_run`
 batcha già al livello giusto) · NUMA/hugepages (il compute è remoto) · quote cgroup per agente (da
