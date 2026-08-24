@@ -23,7 +23,10 @@ let lastExitAt = null; // when the previous tool call finished
 let enteredAt = null; // when the current one started
 let pendingIdleMs = 0; // gap measured by enter(), consumed by exit()
 
-const totals = { calls: 0, idleMs: 0, busyMs: 0, maxIdleMs: 0, since: new Date().toISOString() };
+// snake_case throughout, matching the fields written to the journal: one name
+// per thing, so a share read from sys_status and a gap read from the journal are
+// obviously the same measurement.
+const totals = { calls: 0, idle_ms: 0, busy_ms: 0, max_idle_ms: 0, since: new Date().toISOString() };
 
 /**
  * A tool call has arrived: the idle window just closed. Returns its length in
@@ -54,9 +57,9 @@ export function exit() {
   pendingIdleMs = 0;
 
   totals.calls += 1;
-  totals.idleMs += idleMs;
-  totals.busyMs += busyMs;
-  if (idleMs > totals.maxIdleMs) totals.maxIdleMs = idleMs;
+  totals.idle_ms += idleMs;
+  totals.busy_ms += busyMs;
+  if (idleMs > totals.max_idle_ms) totals.max_idle_ms = idleMs;
 
   return { idle_ms: idleMs, busy_ms: busyMs };
 }
@@ -71,11 +74,22 @@ export function exit() {
  * not inflate it.
  */
 export function stats() {
-  const span = totals.idleMs + totals.busyMs;
+  // A window exists BETWEEN two calls, so N calls give N-1 of them. Reporting
+  // this matters more than it looks: a run with a single tool call has no
+  // window to observe, and a share of 0 there would read as "the machine was
+  // busy" when it means "nothing was measurable". That case is not a corner —
+  // it is exactly what plan_run produces when it collapses six round-trips into
+  // one, which is the whole point of it.
+  const windows = Math.max(0, totals.calls - 1);
+  const span = totals.idle_ms + totals.busy_ms;
   return {
     ...totals,
-    idle_share: span > 0 ? Math.round((totals.idleMs / span) * 1000) / 1000 : null,
-    mean_idle_ms: totals.calls > 0 ? Math.round(totals.idleMs / totals.calls) : null,
+    windows,
+    idle_share: windows > 0 && span > 0 ? Math.round((totals.idle_ms / span) * 1000) / 1000 : null,
+    mean_idle_ms: windows > 0 ? Math.round(totals.idle_ms / windows) : null,
+    // Said in words, because a null in a JSON blob gets read as zero by whoever
+    // is in a hurry.
+    note: windows === 0 ? "single tool call: no inter-call window exists to measure" : undefined,
   };
 }
 
@@ -84,5 +98,5 @@ export function reset() {
   lastExitAt = null;
   enteredAt = null;
   pendingIdleMs = 0;
-  Object.assign(totals, { calls: 0, idleMs: 0, busyMs: 0, maxIdleMs: 0, since: new Date().toISOString() });
+  Object.assign(totals, { calls: 0, idle_ms: 0, busy_ms: 0, max_idle_ms: 0, since: new Date().toISOString() });
 }

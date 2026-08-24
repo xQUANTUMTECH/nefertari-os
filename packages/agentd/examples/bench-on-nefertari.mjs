@@ -171,6 +171,18 @@ async function runOne(run) {
 
   const wallMs = Date.now() - t0;
   const success = run.verify(ws);
+
+  // The inference window, read from the daemon that measured it. This is the
+  // hardware chapter's premise as a number: how much of an agent run the host
+  // spends with nothing to do, while every scheduler on it believes the same.
+  let idle = null;
+  try {
+    const st = await mcp.callTool({ name: "sys_status", arguments: {} });
+    const parsed = JSON.parse(st.content?.[0]?.text ?? "{}");
+    idle = parsed.idle ?? null;
+  } catch {
+    /* a bench that cannot read the share still has its real numbers */
+  }
   await mcp.close();
   fs.rmSync(ws, { recursive: true, force: true });
   return {
@@ -179,6 +191,9 @@ async function runOne(run) {
     promptTok: stat.promptTok, complTok: stat.complTok,
     totalTok: stat.promptTok + stat.complTok,
     wallS: Math.round(wallMs / 100) / 10, errors: stat.errors,
+    idle_share: idle?.idle_share ?? null,
+    idle_ms: idle?.idle_ms ?? null,
+    mean_idle_ms: idle?.mean_idle_ms ?? null,
   };
 }
 
@@ -209,7 +224,7 @@ for (const run of RUNS.filter((r) => !filter || r.bench.startsWith(filter))) {
       const r = { ...(await runOne(run)), run: i };
       results.push(r);
       got.push(r);
-      console.log(`${r.success ? "OK" : "FAIL"}  turns=${r.turns} calls=${r.toolCalls} tok=${r.totalTok} wall=${r.wallS}s${r.errors ? ` errs=${r.errors}` : ""}`);
+      console.log(`${r.success ? "OK" : "FAIL"}  turns=${r.turns} calls=${r.toolCalls} tok=${r.totalTok} wall=${r.wallS}s${r.idle_share !== null ? ` idle=${Math.round(r.idle_share * 100)}%` : ""}${r.errors ? ` errs=${r.errors}` : ""}`);
     } catch (e) {
       console.log(`ERROR: ${String(e.message).slice(0, 200)}`);
       results.push({ model: P.model, bench: run.bench, mode: run.mode, run: i, success: false, error: String(e.message).slice(0, 200) });
@@ -231,6 +246,8 @@ for (const run of RUNS.filter((r) => !filter || r.bench.startsWith(filter))) {
     tokens_range: spread(ok.map((r) => r.totalTok)),
     wall_s_median: median(ok.map((r) => r.wallS)),
     wall_s_range: spread(ok.map((r) => r.wallS)),
+    idle_share_median: median(ok.map((r) => r.idle_share).filter((x) => x != null)),
+    idle_share_range: spread(ok.map((r) => r.idle_share).filter((x) => x != null)),
   });
 }
 

@@ -14,6 +14,7 @@ import { normalizeSteps, normalizeTrajectories } from "./planshape.mjs";
 import { workingSet } from "./workingset.mjs";
 import * as egress from "./egress.mjs";
 import * as localmodel from "./localmodel.mjs";
+import * as idle from "./idle.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as timeline from "./timeline.mjs";
@@ -57,13 +58,14 @@ const MAX_PENDING = Number(process.env.NEFERTARI_MAX_PENDING) || 25;
 // Broker front door: classify, gate, journal. Returns null to proceed,
 // or a pending_approval response the tool must return as-is.
 function gate(tool, args) {
+  idle.enter();
   const { class: cls, reason } = classify(tool, args);
   if (cls === CLASS.IRREVERSIBLE) {
     if (!approvals.consumeApproval(tool, args)) {
       const pend = approvals.listPending();
       const alreadyQueued = pend.some((p) => p.hash === approvals.actionHash(tool, args));
       if (!alreadyQueued && pend.length >= MAX_PENDING) {
-        journal.append({ tool, args, class: cls, decision: "rate_limited", reason, pending: pend.length });
+        journal.append({ tool, args, class: cls, decision: "rate_limited", reason, pending: pend.length, ...idle.exit() });
         return {
           gated: true,
           response: text({
@@ -74,7 +76,7 @@ function gate(tool, args) {
         };
       }
       const entry = approvals.registerPending(tool, args, reason);
-      journal.append({ id: entry.id, tool, args, class: cls, decision: "pending_approval", reason });
+      journal.append({ id: entry.id, tool, args, class: cls, decision: "pending_approval", reason, ...idle.exit() });
       return {
         gated: true,
         response: text({
@@ -93,7 +95,11 @@ function gate(tool, args) {
 }
 
 function record(tool, args, cls, outcome, extra = {}) {
-  journal.append({ tool, args, class: cls, decision: "executed", outcome, ...extra });
+  // idle_ms is the inference window that preceded this call: the seconds the
+  // machine had nothing to do while the model thought. Recorded per entry
+  // because the journal is where anything richer can be computed from later,
+  // and because a share nobody can recompute is a share nobody believes.
+  journal.append({ tool, args, class: cls, decision: "executed", outcome, ...extra, ...idle.exit() });
 }
 
 // ---------- tools ----------
@@ -408,6 +414,7 @@ server.tool(
     const g = gate("sys_status", {});
     if (g.gated) return g.response;
     const status = {
+      idle: idle.stats(),
       hostname: os.hostname(),
       platform: `${os.type()} ${os.release()} (${os.arch()})`,
       uptimeMin: Math.round(os.uptime() / 60),
