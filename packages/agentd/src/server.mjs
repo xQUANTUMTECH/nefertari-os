@@ -9,14 +9,32 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { classify, CLASS, PLAN_TOOLS } from "./broker.mjs";
+import { normalizeSteps, normalizeTrajectories } from "./planshape.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as timeline from "./timeline.mjs";
 import * as ops from "./ops.mjs";
 import { runPlan } from "./plan.mjs";
+import { parseOcs, runOcs } from "./ocs.mjs";
 import { runTrajectories } from "./trajectories.mjs";
 import * as approvals from "./approvals.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
+
+// Wire shapes for plan steps: flat, nested, or a JSON string of either. The
+// widening — and the reason for it — lives in src/planshape.mjs.
+const StepShape = z.object({
+  tool: z.enum(PLAN_TOOLS),
+  args: z.record(z.any()).optional().describe("Older nested form; flat fields below are simpler"),
+  path: z.string().optional(),
+  content: z.string().optional(),
+  command: z.string().optional(),
+  cwd: z.string().optional(),
+});
+const StepsInput = z.union([z.array(StepShape).min(1).max(50), z.string()]);
+const TrajectoriesInput = z.union([
+  z.array(z.object({ label: z.string().optional(), steps: StepsInput })).min(1).max(8),
+  z.string(),
+]);
 
 ensureHome();
 
@@ -133,18 +151,18 @@ server.tool(
   "Execute a whole plan (ordered list of tool steps) in ONE call, inside a timeline transaction: the dir is checkpointed first, steps run in order, and if any step fails the dir is restored (the failed state is auto-checkpointed for forensics). The plan is classified as the WORST of its steps, so a plan containing an irreversible step waits at the human gate before step 1 runs. Allowed step tools: fs_read, fs_write, fs_delete, shell (shell cwd defaults to the plan dir). Use this instead of many single calls for multi-step procedures.",
   {
     dir: z.string().describe("Working dir = the transaction boundary (checkpointed / restored)"),
-    steps: z
-      .array(
-        z.object({
-          tool: z.enum(PLAN_TOOLS),
-          args: z.record(z.any()).describe("Arguments for the step's tool"),
-        })
-      )
-      .min(1)
-      .max(50),
+    steps: StepsInput.describe(
+      'Steps, flat: [{"tool":"fs_write","path":"a.txt","content":"hi"},{"tool":"shell","command":"npm test"}]. ' +
+        'A JSON string of that array works too, as does the older {"tool":..,"args":{..}} form.'
+    ),
     label: z.string().optional(),
   },
   async ({ dir, steps, label }) => {
+    try {
+      steps = normalizeSteps(steps);
+    } catch (e) {
+      return text({ status: "invalid", error: String(e.message || e) });
+    }
     const g = gate("plan_run", { dir, steps });
     if (g.gated) return g.response;
     const result = await runPlan(dir, steps, { label });
@@ -156,26 +174,50 @@ server.tool(
   }
 );
 
+
+server.tool(
+  "ocs_run",
+  "Run an OCS v0 document (ensure_dir/ensure_file/run/assert_*/read). dry_run returns the expanded plan without side effects. Returns OcsReport { status, asserts, steps_run, error?, expanded? }.",
+  {
+    document: z.union([z.string(), z.record(z.any())]).describe("OCS v0 document as object or JSON string"),
+    dry_run: z.boolean().optional().describe("If true, compile only (no side effects)"),
+    project_root: z.string().optional().describe("Override meta.project as cwd root"),
+  },
+  async ({ document, dry_run, project_root }) => {
+    // Parse up front so invalid docs fail without gating/journal noise.
+    try {
+      parseOcs(document);
+    } catch (e) {
+      return text({ status: "failed", asserts: [], steps_run: 0, error: String(e.message || e) });
+    }
+    const report = await runOcs(document, {
+      dry_run,
+      projectRoot: project_root,
+    });
+    record("ocs_run", { dry_run: !!dry_run, project_root }, CLASS.REVERSIBLE, report.status, {
+      steps_run: report.steps_run,
+      notify: report.status === "failed",
+    });
+    return text(report);
+  }
+);
 server.tool(
   "trajectories_run",
   "Run up to 8 ALTERNATIVE plans in parallel, each in its own isolated fork of a checkpoint — try K strategies at once instead of try/fail/backtrack. Each trajectory is transactional (a failing one rolls back to the checkpoint content and never touches the others). An optional eval_cmd runs in each successful fork (exit 0 = pass); the first passing trajectory is recommended as winner — adopt it with timeline_promote. fs step paths should be RELATIVE (resolved inside each fork); shell steps run with cwd = the fork. The call is classified as the worst step across ALL trajectories + the eval command.",
   {
     checkpoint_id: z.string().describe("Checkpoint to fork from (timeline_checkpoint first)"),
-    trajectories: z
-      .array(
-        z.object({
-          label: z.string().optional(),
-          steps: z
-            .array(z.object({ tool: z.enum(PLAN_TOOLS), args: z.record(z.any()) }))
-            .min(1)
-            .max(50),
-        })
-      )
-      .min(1)
-      .max(8),
+    trajectories: TrajectoriesInput.describe(
+      'Alternatives to try: [{"label":"a","steps":[{"tool":"fs_write","path":"x","content":"1"}]}]. ' +
+        "Steps take the same flat form as plan_run; a JSON string of the whole array is accepted."
+    ),
     eval_cmd: z.string().optional().describe("Shell command scored per fork (cwd = fork). Exit 0 = pass."),
   },
   async ({ checkpoint_id, trajectories, eval_cmd }) => {
+    try {
+      trajectories = normalizeTrajectories(trajectories);
+    } catch (e) {
+      return text({ status: "invalid", error: String(e.message || e) });
+    }
     const g = gate("trajectories_run", { checkpoint_id, trajectories, eval_cmd });
     if (g.gated) return g.response;
     const result = await runTrajectories(checkpoint_id, trajectories, { evalCmd: eval_cmd });
