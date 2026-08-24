@@ -1,0 +1,32 @@
+[
+  {
+    "harness": "dsh",
+    "model": "deepseek-ai/deepseek-v4-flash",
+    "bench": "A-files",
+    "mode": "dsh",
+    "runs": 3,
+    "successes": 3,
+    "turns_median": 2,
+    "turns_range": "2–2",
+    "tool_calls_median": 6,
+    "tokens_median": 10545,
+    "tokens_range": "10324–10556",
+    "wall_s_median": 14.9,
+    "wall_s_range": "13.4–51"
+  },
+  {
+    "harness": "dsh",
+    "model": "deepseek-ai/deepseek-v4-flash",
+    "bench": "B-tagline",
+    "mode": "dsh",
+    "runs": 3,
+    "successes": 3,
+    "turns_median": 11,
+    "turns_range": "11–15",
+    "tool_calls_median": 10,
+    "tokens_median": 16939,
+    "tokens_range": "16205–18344",
+    "wall_s_median": 33,
+    "wall_s_range": "31.8–53.8"
+  }
+]

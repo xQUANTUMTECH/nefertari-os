@@ -37,11 +37,19 @@ const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), ".dsh");
 if (!fs.existsSync(DSH_BIN)) throw new Error(`dsh not found at ${DSH_BIN} — set DSH_BIN (build it with: pnpm run build)`);
 
 // dsh names a session directory after the cwd, mangling separators. Rather than
-// reimplement that mangling — which would break the day it changes — take the
-// session directory that appeared after this run started.
-function newestSessionAfter(tStart) {
+// reimplement that mangling — which would break the day it changes — the run's
+// log is identified by DIFFERENCE: list the session files before, list them
+// after, and take the one that is new.
+//
+// The first attempt matched "newest file modified since the run started", which
+// is not the same thing and is quietly wrong: any earlier session touched in the
+// meantime qualifies, and an unrelated log from a manual dsh session earlier the
+// same day was attributed to a benchmark run — reporting 18834 tokens where
+// three consistent runs later showed ~10500. A benchmark that can silently
+// measure someone else's session is worse than one that measures nothing.
+function listSessions() {
   const root = path.join(DSH_HOME, "sessions");
-  let best = null;
+  const out = new Set();
   const walk = (dir) => {
     let entries;
     try {
@@ -52,14 +60,17 @@ function newestSessionAfter(tStart) {
     for (const e of entries) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith(".zstd")) {
-        const st = fs.statSync(p);
-        if (st.mtimeMs >= tStart && (!best || st.mtimeMs > best.mtimeMs)) best = { path: p, mtimeMs: st.mtimeMs };
-      }
+      else if (e.name.endsWith(".zstd")) out.add(p);
     }
   };
   walk(root);
-  return best?.path || null;
+  return out;
+}
+
+function sessionCreatedSince(before) {
+  const after = [...listSessions()].filter((p) => !before.has(p));
+  if (after.length !== 1) return null; // zero, or ambiguous: report nothing rather than a guess
+  return after[0];
 }
 
 // The log is append-only: one zstd FRAME per event, concatenated. Both the
@@ -157,14 +168,14 @@ for (const run of RUNS.filter((r) => !filter || r.bench.startsWith(filter))) {
   for (let i = 1; i <= N; i++) {
     process.stdout.write(`▶ ${run.bench} / dsh${N > 1 ? ` [${i}/${N}]` : ""} … `);
     const ws = fs.mkdtempSync(path.join(os.tmpdir(), `dsh-bench-${run.bench}-`));
-    const tStart = Date.now();
+    const sessionsBefore = listSessions();
     const t0 = process.hrtime.bigint();
     const { err, stderr } = await runDsh(ws, run.task());
     const wallS = Math.round(Number(process.hrtime.bigint() - t0) / 1e8) / 10;
     const success = run.verify(ws);
 
     let stats = { turns: null, toolCalls: null, totalTok: null };
-    const log = newestSessionAfter(tStart - 2000);
+    const log = sessionCreatedSince(sessionsBefore);
     if (log) {
       try {
         stats = statsFrom(readSessionEvents(log));
