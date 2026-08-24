@@ -52,6 +52,20 @@ switch (cmd) {
     serve();
     break;
   }
+  case "run": {
+    const { run } = await import("./run.mjs");
+    try {
+      const r = await run(rest);
+      if (!r.spawned) {
+        print(r.error ? `failed to start: ${r.error}` : { confined: r.workspace, writable: r.writable, argv: [r.file, ...r.args] });
+        process.exit(r.error ? 1 : 0);
+      }
+      process.exit(r.code ?? 1);
+    } catch (e) {
+      print(String(e.message));
+      process.exit(2);
+    }
+  }
   case "mcp-socket": {
     const sock = rest[0];
     if (!sock) {
@@ -74,6 +88,10 @@ Usage:
   nefertari snapshots         list snapshots
   nefertari undo <snap_id>    restore a snapshot
   nefertari serve             headless approval API over HTTP (containers/Railway)
+  nefertari run [-w dir] [--allow p]... -- <agent cmd>
+                              run the agent with the workspace READ-ONLY, so its
+                              only way to change it is through the daemon
+                              (--dry-run shows the sandbox without starting it)
   nefertari mcp-socket <p>    serve MCP on a local socket, so the agent connects
                               instead of owning the daemon (required before the
                               agent itself can be confined)`);

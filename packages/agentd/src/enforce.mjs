@@ -59,6 +59,22 @@ function jsonArray(env, fallback = []) {
   }
 }
 
+/**
+ * Where the Landlock wrapper lives, or null. Exported because confining a
+ * COMMAND and confining the AGENT ITSELF are the same mechanism pointed at
+ * different processes, and duplicating the search would let the two disagree
+ * about which binary is in use.
+ */
+export function enforcerPath() {
+  const bin =
+    process.env.NEFERTARI_ENFORCE_BIN ||
+    [
+      path.resolve(HERE, "../../enforce/target/release/nefertari-enforce"),
+      "/usr/local/bin/nefertari-enforce",
+    ].find(isExecutable);
+  return bin && isExecutable(bin) ? bin : null;
+}
+
 // --- drivers: each returns { file, args } or null when unavailable ---
 
 const drivers = {
@@ -66,13 +82,8 @@ const drivers = {
 
   // Our Rust wrapper. Grants read+exec everywhere, write only to writePaths.
   landlock({ command, writePaths, readPaths }) {
-    const bin =
-      process.env.NEFERTARI_ENFORCE_BIN ||
-      [
-        path.resolve(HERE, "../../enforce/target/release/nefertari-enforce"),
-        "/usr/local/bin/nefertari-enforce",
-      ].find(isExecutable);
-    if (!bin || !isExecutable(bin)) return null;
+    const bin = enforcerPath();
+    if (!bin) return null;
     const args = [];
     for (const w of writePaths) args.push("--allow-write", w);
     for (const r of readPaths) args.push("--allow-read", r);
