@@ -1,11 +1,16 @@
 # Nefertari OS — Architecture
 
+> Product thesis: [VISION.md](./VISION.md) · Context economy: [PROPORTIONALITY.md](./PROPORTIONALITY.md) · Perf taxes: [PERFORMANCE-TRACK.md](./PERFORMANCE-TRACK.md)
+
 ## 1. Design principles
 
-1. **Reversibility is the security model.** The safety net is not "the AI is careful", it is "every action has an undo". Anything that cannot be proven reversible is treated as irreversible and gated.
-2. **The broker is physics, not convention.** The agent never touches the host directly; every action flows through `agentd`, which classifies, snapshots, journals, and — when needed — blocks pending human approval.
-3. **Host-agnostic core.** The same daemon runs on WSL2, in a Railway/Docker container, or on bare-metal Linux. Host-specific capabilities (snapshot backend, desktop access, notifications) are pluggable backends, never assumptions.
-4. **Unknown = irreversible.** Classification is allowlist-based. A shell command that matches no known-safe pattern is gated, not guessed.
+1. **Agent as first-class citizen.** The OS is built for the agent as caller — body, time, ambient machine memory — not a human typing in a terminal. Cognition (goals, skills) stays in the brain (e.g. Ania); Nefertari is host physics + continuity.
+2. **Full access, proportional context.** Capability surface can be admin-class; what enters the model is skinny, faceted, and tiered (see PROPORTIONALITY). Power ≠ paste-the-machine.
+3. **Reversibility is the security model.** The safety net is not "the AI is careful", it is "every action has an undo". Anything that cannot be proven reversible is treated as irreversible and gated.
+4. **The broker is physics, not convention.** The agent never touches the host directly; every action flows through `agentd`, which classifies, snapshots, journals, and — when needed — blocks pending human approval. Dual-path mutation (brain bypassing agentd) breaks the model — body contract is mandatory for production.
+5. **Host-agnostic core.** The same daemon runs on WSL2, in a Railway/Docker container, or on bare-metal Linux. Host-specific capabilities (snapshot backend, desktop access, notifications, wakes) are pluggable backends, never assumptions.
+6. **Unknown = irreversible.** Classification is allowlist-based. A shell command that matches no known-safe pattern is gated, not guessed.
+7. **Continuity over chat sessions.** Journal, timeline, world delta, and self-wake packets outlive a single model context window.
 
 ## 2. Components
 
@@ -61,3 +66,7 @@ In phase 1 the agent and agentd run as the same user, so a malicious/compromised
 
 - **Windows companion**: tiny service (or PowerShell host) reachable from WSL2 via localhost; provides toast notifications, an approve/deny dialog, screenshots, and UI Automation primitives. The WSL2↔Windows boundary makes the gate physical.
 - **NixOS-WSL fork**: agentd preinstalled as a systemd unit, `configuration.nix` exposed as a first-class MCP tool with generation rollback as the snapshot backend.
+- **Body contract** with brains (Ania): host mutation only via agentd; path alias; unified HITL pending queue.
+- **World model + assert** (T4–T6): kill orientation and “I think the file exists” hallucinations.
+- **Self-wake bus** (T7): timer/event/gate/dependency wakes with skinny resume packets.
+- **Host tiers T0–T4** (T8): escalate capability with the goal; de-escalate after done.

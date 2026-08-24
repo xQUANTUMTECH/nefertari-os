@@ -86,6 +86,22 @@ services, packages, project index, **delta since the agent's last session**
 `assert_outcome(check)` after actions; the OS answers "did you get what you
 wanted?" instead of the model re-probing.
 
+### T7 — Self-wake bus (continuity tax)
+An agent that only runs while a human is typing is not autonomous. Wakes:
+
+- timer / cron / deadline  
+- host events (job done, fs watch, disk, webhook)  
+- gate resolved (human approved/denied)  
+- dependency (subagent / trajectory finished)  
+- watchdog (stall / no progress)
+
+Each wake delivers a **skinny packet** (goal id, delta, open todos) — not a full
+transcript reload. See [VISION.md](./VISION.md) §3.2 and [PROPORTIONALITY.md](./PROPORTIONALITY.md) §6.
+
+### T8 — Proportional host tiers + context economy
+Full OS *capability* with progressive disclosure: world facets on demand, host
+tiers T0–T4, no journal/tree dumps into the prompt. See [PROPORTIONALITY.md](./PROPORTIONALITY.md).
+
 ## Parallel track (security — same machinery, second face)
 
 - `preflight(action)` → `{class, will_gate, undo_via}` without executing. Cheap to
@@ -95,5 +111,8 @@ wanted?" instead of the model re-probing.
 
 ## Sequencing
 
-T1 → T2 → T3 form one dependency chain (each reuses the previous). T4/T5 are
-independent and can interleave. Preflight rides along whenever convenient.
+T1 → T2 → T3 form one dependency chain (each reuses the previous). T4/T5/T6 kill
+orientation and hallucination taxes. T7 (self-wake) and T8 (proportionality) make
+autonomy continuous and affordable. Preflight rides along whenever convenient.
+
+Product thesis (body + fusion + cost control): [VISION.md](./VISION.md).

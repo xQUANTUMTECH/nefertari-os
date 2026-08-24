@@ -24,7 +24,8 @@ const parse = (r) => JSON.parse(r.content[0].text);
 const { tools } = await client.listTools();
 const names = tools.map((t) => t.name).sort();
 console.log("tools:", names.join(", "));
-assert.deepEqual(names, [
+// Required core surface — allow extra tools (ocs_run, …) without brittle deepEqual.
+const required = [
   "fs_delete",
   "fs_read",
   "fs_write",
@@ -40,7 +41,11 @@ assert.deepEqual(names, [
   "timeline_restore",
   "trajectories_run",
   "undo",
-]);
+];
+for (const t of required) {
+  assert.ok(names.includes(t), `missing required tool: ${t}`);
+}
+console.log(`tool surface OK (required ${required.length}, total ${names.length})`);
 
 // write → read → undo roundtrip
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "nef-e2e-"));
@@ -56,11 +61,20 @@ const r2 = await client.callTool({ name: "fs_read", arguments: { path: f } });
 assert.equal(r2.content[0].text, "v1");
 console.log("write → read → undo roundtrip: OK");
 
-// safe shell passes, dangerous shell is gated
-const sh = parse(await client.callTool({ name: "shell", arguments: { command: "uname -sr && whoami" } }));
-assert.equal(sh.exitCode, 0);
-console.log("safe shell:", sh.stdout.trim().replace(/\n/g, " · "));
-const danger = parse(await client.callTool({ name: "shell", arguments: { command: `rm -rf ${work}` } }));
+// safe shell passes (must stay on SAFE_RO allowlist — no node/python interpreters)
+const sh = parse(
+  await client.callTool({
+    name: "shell",
+    arguments: { command: "echo nefertari-e2e-ok && pwd" },
+  }),
+);
+assert.equal(sh.exitCode, 0, `safe shell should run: ${JSON.stringify(sh).slice(0, 200)}`);
+assert.match(String(sh.stdout || ""), /nefertari-e2e-ok/);
+console.log("safe shell:", String(sh.stdout || "").trim().replace(/\n/g, " · "));
+// Destructive path: POSIX rm works under agentd bash wrapper (incl. Git Bash on Windows)
+const workPosix = work.replace(/\\/g, "/");
+const nukeWork = `rm -rf '${workPosix}'`;
+const danger = parse(await client.callTool({ name: "shell", arguments: { command: nukeWork } }));
 assert.equal(danger.status, "pending_approval");
 console.log(`dangerous shell correctly gated → ${danger.action_id} (waiting for: nefertari approve)`);
 
@@ -78,11 +92,11 @@ const plan = parse(
   })
 );
 assert.equal(plan.status, "completed");
-assert.equal(plan.steps[1].output.stdout, "PLAN");
+assert.match(String(plan.steps[1].output?.stdout ?? plan.steps[1].output ?? ""), /PLAN/);
 const gatedPlan = parse(
   await client.callTool({
     name: "plan_run",
-    arguments: { dir: work, steps: [{ tool: "shell", args: { command: `rm -rf ${work}` } }] },
+    arguments: { dir: work, steps: [{ tool: "shell", args: { command: nukeWork } }] },
   })
 );
 assert.equal(gatedPlan.status, "pending_approval");

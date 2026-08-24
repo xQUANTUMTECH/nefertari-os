@@ -52,27 +52,36 @@ assert.equal(w.status, "written");
 assert.ok(w.snapshot_id, "write must return a snapshot id");
 done("deployed a broken config (snapshot captured)");
 
+// Validation via MCP fs_read (portable).
+// Destructive shell runs under bash (-lc); on Windows/WSL/Git Bash convert drive paths.
+const portOk = (text) => /^port=[0-9]+$/m.test(String(text || ""));
+function toBashPath(p) {
+  const norm = path.resolve(p);
+  const m = norm.match(/^([A-Za-z]):[\\/](.*)$/);
+  if (m) {
+    // Prefer WSL mount; Git Bash often accepts /mnt/<drive>/… too when using WSL-backed bash.
+    return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, "/")}`;
+  }
+  return norm.replace(/\\/g, "/");
+}
+const dataBash = toBashPath(dataDir);
+const nukeCmd = `rm -rf '${dataBash}'`;
+
 // 2. validate → fail → roll back
-const validate = await call("shell", {
-  command: `grep -Eq '^port=[0-9]+$' ${conf} && echo VALID || echo INVALID`,
-});
-assert.match(validate.stdout, /INVALID/, "broken config must fail validation");
+assert.equal(portOk(await readRaw(conf)), false, "broken config must fail validation");
 done("validation correctly reports the config broken");
 
 const undo = await call("undo", { snapshot_id: w.snapshot_id });
 assert.equal(undo.status, "restored");
 const afterUndo = await readRaw(conf);
 assert.equal(afterUndo, good, "rollback must restore the exact working config");
-const revalidate = await call("shell", {
-  command: `grep -Eq '^port=[0-9]+$' ${conf} && echo VALID || echo INVALID`,
-});
-assert.match(revalidate.stdout, /VALID/, "restored config must pass validation");
+assert.equal(portOk(afterUndo), true, "restored config must pass validation");
 done("rolled back to the working config and re-validated");
 
 // 3. destructive cleanup MUST be gated — and physically blocked
-const nuke = { command: `rm -rf ${dataDir}` };
+const nuke = { command: nukeCmd };
 const gated = await call("shell", nuke);
-assert.equal(gated.status, "pending_approval", "rm -rf must be gated, not executed");
+assert.equal(gated.status, "pending_approval", "destructive cleanup must be gated, not executed");
 assert.ok(fs.existsSync(dataDir), "GATE MUST BE PHYSICAL: data dir must still exist");
 assert.equal(fs.readdirSync(dataDir).length, 2, "no files may be touched before approval");
 done(`destructive cleanup gated (${gated.action_id}) — data untouched on disk`);
@@ -82,7 +91,7 @@ const pending = approvals.listPending();
 assert.equal(pending.length, 1);
 approvals.approve(pending[0].id); // == `nefertari approve <id>` at the CLI
 const executed = await call("shell", nuke);
-assert.equal(executed.exitCode, 0, "after approval the command runs");
+assert.equal(executed.exitCode, 0, `after approval the command runs: ${JSON.stringify(executed).slice(0, 240)}`);
 assert.ok(!fs.existsSync(dataDir), "after approval the cleanup actually happened");
 done("human approved → retry executed exactly once → data removed");
 

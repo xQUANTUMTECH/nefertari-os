@@ -1,8 +1,9 @@
 # Nefertari OS
 
-**The first system layer built for the agent as caller, not the human as caller.** The agent is not an app — it is a first-class citizen of the machine: it gets a machine that knows itself, state it can branch on, and execution at the speed of intent instead of the speed of keystrokes.
+**The first system layer built for the agent as caller, not the human as caller.** The agent is not an app — it is a first-class citizen of the machine: full OS access at intent-speed, a live world it doesn’t rediscover every turn, forkable time, and continuity (self-wake, journal, deltas) — without dumping the whole machine into the prompt.
 
-> Status: early prototype (phase 1 — `agentd` + permission broker on WSL2 / any Linux).
+> Status: early prototype (phase 1–2a — `agentd` + broker + timeline/plan/trajectories on WSL2 / any Linux).  
+> Thesis: [docs/VISION.md](docs/VISION.md) · Proportionality: [docs/PROPORTIONALITY.md](docs/PROPORTIONALITY.md) · Neural tissue (NexusDB/Hebbian): [docs/NEURAL-LAYER-NEXUSDB.md](docs/NEURAL-LAYER-NEXUSDB.md)
 
 ## The thesis
 
@@ -277,15 +278,18 @@ no secret ever touches a command line).
   Hardened: sensitive-path gating, GET-query exfil + net allowlist, approval-queue
   cap, `/dev/null` no-op redirects. Tests: red-team 63/63, smoke 23/23, HTTP 6/6,
   enforce (live Landlock proof), real-model + Team AI runs. Public Docker image + CI.
-- **Phase 2** (started) — performance track (headline): ✅ timeline
-  checkpoint/fork/restore/promote, ✅ `plan_run` (transactional intent, worst-class
-  gating up front), ✅ `trajectories_run` (K strategies in parallel forks, eval,
-  promote the winner); next: live world-model (orientation tax), `preflight` for
-  embodied/robotic agents. Parallel security track: kernel-enforced reversibility
-  (✅ `nefertari-enforce`, Landlock ABI 3, proven), Windows companion (✅ toasts +
-  approve/deny from Windows; next: UI Automation eyes/hands), NixOS-WSL custom
-  distro with native declarative rollback, socket-daemon form of the enforcer.
-- **Phase 3**: desktop control via accessibility APIs (AT-SPI / UIA / AXUIElement), local model routing, voice.
+- **Phase 2a** (done) — time & intent: ✅ timeline checkpoint/fork/restore/promote,
+  ✅ `plan_run`, ✅ `trajectories_run`. Parallel: ✅ Landlock enforce, ✅ Windows
+  companion approve toasts.
+- **Phase 2b–e** (next) — **body + fusion + affordable autonomy** (see VISION):
+  - body contract with Ania (no dual-path host mutation)
+  - live world-model + typed state + `assert_outcome` (T4–T6)
+  - **self-wake bus** (timer/event/gate/dependency) + skinny resume packets (T7)
+  - **proportional host tiers** T0–T4 + progressive disclosure (T8)
+  - `preflight` for embodied/robotic agents
+  - companion UI Automation eyes/hands; NixOS-WSL; CoW backends
+- **Phase 3**: desktop control (AT-SPI / UIA / AXUIElement), local model routing, voice,
+  agent-as-systemd-citizen install profile.
 
 ## License
 
