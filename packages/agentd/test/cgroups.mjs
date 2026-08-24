@@ -104,4 +104,35 @@ try {
 await sleep(300);
 assert.ok(cg.destroy(NAME).ok, "an empty group is removable");
 console.log("  ok — an empty group is removed");
+
+// --- accounting must survive the race it originally lost ---
+//
+// A command joins its group before exec rather than being moved into it after
+// spawn. The difference is not accuracy, it is direction: moving afterwards
+// let a pipeline fork its members outside the group, and the daemon reported a
+// busy `head | md5sum` as less CPU than a `sleep`. Anything that puts the move
+// back will show up right here.
+if (g.cpu) {
+  const ops = await import("../src/ops.mjs");
+  const { CLASS } = await import("../src/broker.mjs");
+  const run = (cmd) => ops.opShell({ command: cmd, cwd: "/tmp" }, CLASS.REVERSIBLE);
+
+  const waited = await run("sleep 0.4");
+  const burned = await run("head -c 30000000 /dev/urandom | md5sum > /dev/null");
+
+  assert.equal(waited.output.exitCode, 0, "the probe commands must actually run");
+  assert.equal(burned.output.exitCode, 0);
+  assert.ok(typeof burned.meta.cpu_usec === "number", "a grouped command reports the CPU it consumed");
+  assert.ok(
+    burned.meta.cpu_usec > waited.meta.cpu_usec * 5,
+    `work must account for more CPU than waiting: burned ${burned.meta.cpu_usec}us vs waited ${waited.meta.cpu_usec}us — ` +
+      `if these are close or inverted, the command is being moved into its group after spawn again`
+  );
+  console.log(
+    `  ok — CPU accounted per command (work ${burned.meta.cpu_usec}us vs wait ${waited.meta.cpu_usec}us), pipeline included`
+  );
+} else {
+  console.log("  skip — CPU accounting needs a delegated cpu controller");
+}
+
 console.log("CGROUP TESTS PASSED");

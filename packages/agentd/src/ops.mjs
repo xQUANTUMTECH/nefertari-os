@@ -11,6 +11,8 @@ import { execFile } from "node:child_process";
 import * as snapshots from "./snapshots.mjs";
 import { enforceWrap } from "./enforce.mjs";
 import * as egress from "./egress.mjs";
+import * as cgroups from "./cgroups.mjs";
+import crypto from "node:crypto";
 
 export function opFsRead({ path: p }) {
   const data = fs.readFileSync(p, "utf8");
@@ -50,21 +52,54 @@ export function opShell({ command, cwd }, cls) {
   // Reversible commands run under the enforcement driver (writes confined to
   // workdir + /tmp) when available; everything else runs plain.
   const { file, args: execArgs, enforced, driver } = enforceWrap(command, { cls, cwd: workdir });
+
+  // A cgroup of its own, so the command is a thing the OS can be told about
+  // rather than an anonymous child: what CPU it actually consumed, and later
+  // whether to freeze it or let it yield. Where cgroups are unavailable — a
+  // laptop, an ordinary container — this is silently nothing and the command
+  // runs exactly as before.
+  const group = `sh-${crypto.randomBytes(4).toString("hex")}`;
+  const grouped = cgroups.ensure(group).ok;
+
+  // The command joins the group ITSELF, before exec, rather than being moved
+  // into it afterwards. Moving afterwards is a race that a pipeline wins: the
+  // shell forks its members within microseconds and they stay wherever it was
+  // at the time. It does not merely lose a little accuracy — measured, it
+  // reported a busy `head | md5sum` as 507us of CPU and a `sleep 0.4` as
+  // 11655us, which is the answer inverted.
+  //
+  // The write happens BEFORE the enforcer runs, which is the only order that
+  // works: Landlock confines writes to the workspace, and /sys/fs/cgroup is not
+  // in it.
+  let spawnFile = file;
+  let spawnArgs = execArgs;
+  if (grouped) {
+    spawnFile = "/bin/sh";
+    spawnArgs = ["-c", `echo $$ > ${cgroups.procsPath(group)}; exec "$0" "$@"`, file, ...execArgs];
+  }
+
   return new Promise((resolve) => {
-    execFile(file, execArgs, { cwd: workdir, timeout: 120000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(spawnFile, spawnArgs, { cwd: workdir, timeout: 120000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       // A command's output reaches the context exactly like a file's contents —
       // `cat .env`, `env`, `git remote -v` — so it is screened the same way.
       const so = egress.screen(String(stdout), { source: "shell", path: workdir });
       const se = egress.screen(String(stderr), { source: "shell", path: workdir });
       const found = [...so.findings, ...se.findings];
+      // Read before the group is torn down: the counters go with it.
+      const used = grouped ? cgroups.usage(group) : null;
       resolve({
         output: { exitCode: err ? (err.code ?? 1) : 0, stdout: so.content, stderr: se.content },
         meta: {
           enforced: !!enforced,
           driver,
+          ...(used?.usage_usec != null ? { cpu_usec: used.usage_usec } : {}),
           ...(found.length ? { egress: so.verdict === "clean" ? se.verdict : so.verdict, withheld: found.length, kinds: [...new Set(found.map((f) => f.kind))] } : {}),
         },
       });
+      // The kernel needs a moment to reap the exited process before the
+      // directory can go; a failed rmdir here is not worth an error path, the
+      // next ensure() with the same name would simply adopt it.
+      if (grouped) setTimeout(() => cgroups.destroy(group), 50).unref?.();
     });
   });
 }

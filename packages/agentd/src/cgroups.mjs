@@ -136,6 +136,17 @@ export function ensure(name) {
   return { ok: true, path: dir, cpu };
 }
 
+/**
+ * Where a process writes its own pid to join the group. Handed out so a child
+ * can place ITSELF before exec: moving it afterwards is a race it usually
+ * loses — a shell forks its pipeline within microseconds, and those
+ * grandchildren stay wherever the shell was when it forked them. Measured, that
+ * race reported a busy pipeline as 507us of CPU and a sleep as 11655us.
+ */
+export function procsPath(name) {
+  return path.join(groupPath(name), "cgroup.procs");
+}
+
 /** Put a process under this group's control. Children it spawns follow it. */
 export function move(name, pid) {
   const a = available();
