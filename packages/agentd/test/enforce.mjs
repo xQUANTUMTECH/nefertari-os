@@ -47,11 +47,32 @@ console.log("  ok — noisy commands run unconfined");
   console.log("  ok — 'custom' driver wires any sandboxer from env (vendor-neutral)");
 }
 
-// The default (landlock) driver + live kernel proof when the binary is present.
-const bin = process.env.NEFERTARI_ENFORCE_BIN;
-const rev = enforceWrap("ls", { cls: CLASS.REVERSIBLE, cwd: "/tmp" });
+// Fail-open is forced, not inferred: point the driver at a path that cannot
+// exist, so absence is unambiguous. Branching on ambient state instead used to
+// hide the case that matters most — the shipped container, where the binary
+// sits at /usr/local/bin and is found whether or not the env var is set.
+{
+  const prev = process.env.NEFERTARI_ENFORCE_BIN;
+  process.env.NEFERTARI_ENFORCE_BIN = path.join(os.tmpdir(), "nefertari-enforce-absent");
+  const r = enforceWrap("ls", { cls: CLASS.REVERSIBLE, cwd: "/tmp" });
+  assert.equal(r.file, "bash", "without a binary, fail-open to plain bash");
+  assert.equal(r.enforced, false);
+  if (prev === undefined) delete process.env.NEFERTARI_ENFORCE_BIN;
+  else process.env.NEFERTARI_ENFORCE_BIN = prev;
+  console.log("  ok — enforcer absent: fail-open to plain bash");
+}
+
+// Resolve the enforcer exactly the way the driver does, so the kernel proof runs
+// wherever it is really installed rather than only when someone exported a path.
+const bin =
+  process.env.NEFERTARI_ENFORCE_BIN ||
+  [
+    path.resolve("../enforce/target/release/nefertari-enforce"),
+    "/usr/local/bin/nefertari-enforce",
+  ].find((p) => fs.existsSync(p));
 
 if (bin && fs.existsSync(bin)) {
+  const rev = enforceWrap("ls", { cls: CLASS.REVERSIBLE, cwd: "/tmp" });
   assert.equal(rev.file, bin, "reversible commands run under the enforcer when present");
   assert.equal(rev.driver, "landlock");
   assert.ok(rev.args.includes("--allow-write"), "enforcer gets a writable allowlist");
@@ -59,10 +80,10 @@ if (bin && fs.existsSync(bin)) {
 
   const sbx = fs.mkdtempSync(path.join(os.tmpdir(), "nef-enf-"));
   // "outside" must be outside BOTH cwd and /tmp (the enforcer grants /tmp as
-  // scratch), so put it under $HOME.
+  // scratch), so put it under the home directory.
   const outside = fs.mkdtempSync(path.join(os.homedir(), "nef-out-"));
 
-  const bad = enforceWrap(`echo x > ${outside}/hole.txt`, { cls: CLASS.REVERSIBLE, cwd: sbx });
+  const bad = enforceWrap("echo x > " + outside + "/hole.txt", { cls: CLASS.REVERSIBLE, cwd: sbx });
   let blocked = false;
   try {
     execFileSync(bad.file, bad.args, { stdio: "pipe" });
@@ -70,17 +91,17 @@ if (bin && fs.existsSync(bin)) {
     blocked = true;
   }
   assert.ok(blocked, "a write outside the working dir must be denied by the kernel");
-  assert.ok(!fs.existsSync(`${outside}/hole.txt`), "the outside file must not exist");
+  assert.ok(!fs.existsSync(outside + "/hole.txt"), "the outside file must not exist");
 
-  const good = enforceWrap(`echo x > ${sbx}/ok.txt`, { cls: CLASS.REVERSIBLE, cwd: sbx });
+  const good = enforceWrap("echo x > " + sbx + "/ok.txt", { cls: CLASS.REVERSIBLE, cwd: sbx });
   execFileSync(good.file, good.args, { stdio: "pipe" });
-  assert.ok(fs.existsSync(`${sbx}/ok.txt`), "a write inside the working dir must succeed");
+  assert.ok(fs.existsSync(sbx + "/ok.txt"), "a write inside the working dir must succeed");
 
   fs.rmSync(sbx, { recursive: true, force: true });
   fs.rmSync(outside, { recursive: true, force: true });
   console.log("  ok — LANDLOCK PROOF: kernel denied write outside cwd, allowed inside");
 } else {
-  assert.equal(rev.file, "bash", "without the binary, fail-open to plain bash");
-  console.log("  ok — enforcer absent: fail-open to plain bash (set NEFERTARI_ENFORCE_BIN to prove kernel enforcement)");
+  console.log("  skip — no enforcer on this host (Linux only); kernel proof not run");
 }
+
 console.log("ENFORCE TESTS PASSED");

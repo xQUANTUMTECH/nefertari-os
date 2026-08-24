@@ -6,15 +6,25 @@
 // them in parallel, promote the winner. Restore and promote auto-checkpoint the
 // current tree first, so time travel is itself undoable.
 //
-// Backend = plain file copy (works on any host). The interface is stable so a
-// CoW backend (btrfs/ZFS/overlayfs) can replace it without touching callers.
+// Backend = plain file copy (works on any host), with a clone fast path where the
+// filesystem offers one. The interface is stable so a CoW backend (btrfs/ZFS/
+// overlayfs) can replace it without touching callers.
 
 import fs from "node:fs";
 import path from "node:path";
 import { TIMELINE_DIR, ensureHome } from "./paths.mjs";
 import { newId } from "./journal.mjs";
 
+// Directory names never copied into a checkpoint. These are reproducible from a
+// manifest and dwarf the source they belong to, so copying them K times would
+// make forking cost more than the work being forked. See linkExcluded() for how
+// a fork still reaches them.
 const DEFAULT_EXCLUDE = ["node_modules"];
+
+// Ask the kernel to clone rather than copy where the filesystem supports it
+// (btrfs, XFS with reflink=1, APFS). Node falls back to a full copy on its own
+// when the filesystem says no, so this is free everywhere and fast where it counts.
+const CLONE = fs.constants.COPYFILE_FICLONE;
 
 function maxBytes() {
   const mb = Number(process.env.NEFERTARI_TIMELINE_MAX_MB) || 512;
@@ -35,34 +45,59 @@ function readManifest(dir, kind, id) {
 }
 
 // Walk a tree, skipping excluded directory names at any depth.
-// Returns relative file paths (POSIX separators for manifest stability).
+//
+// Returns entries, not bare paths, because a symlink has to survive the round
+// trip AS a symlink: pnpm and bun build node_modules out of links, and a tree
+// whose links were dropped is not a copy of anything — it is a tree that no
+// longer installs, builds or tests. Links are recorded by target and never
+// followed, which also makes cycles impossible.
 function walk(root, exclude, rel = "", out = []) {
   const abs = path.join(root, rel);
   for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
-    if (e.isSymbolicLink()) continue; // phase 1: links are not tracked
     const r = rel ? `${rel}/${e.name}` : e.name;
-    if (e.isDirectory()) {
+    // An excluded name is excluded whatever it is. A fork carries a LINK named
+    // after each excluded dir; matching only real directories here would let
+    // that link travel back on promote and replace the original with a link to
+    // itself.
+    if ((e.isDirectory() || e.isSymbolicLink()) && exclude.includes(e.name)) continue;
+    if (e.isSymbolicLink()) {
+      out.push({ rel: r, type: "link", target: fs.readlinkSync(path.join(root, r)) });
+    } else if (e.isDirectory()) {
       if (!exclude.includes(e.name)) walk(root, exclude, r, out);
     } else if (e.isFile()) {
-      out.push(r);
+      out.push({ rel: r, type: "file" });
     }
   }
   return out;
 }
 
-function copyFiles(srcRoot, dstRoot, files) {
-  for (const r of files) {
-    const dst = path.join(dstRoot, r);
+const rels = (entries) => entries.map((e) => e.rel);
+
+// Reproduce `entries` from srcRoot into dstRoot: files copied (cloned where the
+// filesystem allows), links recreated pointing at the same target.
+function materialize(srcRoot, dstRoot, entries) {
+  for (const e of entries) {
+    const dst = path.join(dstRoot, e.rel);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
+    if (e.type === "link") {
+      if (path.resolve(path.dirname(dst), e.target) === path.resolve(dst)) continue; // self-link
+      try {
+        fs.rmSync(dst, { force: true, recursive: false });
+      } catch {
+        /* nothing there, or a directory we are about to fail on loudly */
+      }
+      fs.symlinkSync(e.target, dst);
+      continue;
+    }
     try {
-      fs.copyFileSync(path.join(srcRoot, r), dst);
-    } catch (e) {
+      fs.copyFileSync(path.join(srcRoot, e.rel), dst, CLONE);
+    } catch (err) {
       // Windows refuses to overwrite read-only destinations with EPERM —
       // git marks .git/objects/* read-only, so any tree containing a repo
       // would brick restore/promote. Clear the bit and retry once.
-      if (e.code !== "EPERM" && e.code !== "EACCES") throw e;
+      if (err.code !== "EPERM" && err.code !== "EACCES") throw err;
       fs.chmodSync(dst, 0o644);
-      fs.copyFileSync(path.join(srcRoot, r), dst);
+      fs.copyFileSync(path.join(srcRoot, e.rel), dst, CLONE);
     }
   }
 }
@@ -71,11 +106,73 @@ function copyFiles(srcRoot, dstRoot, files) {
 function pruneEmptyDirs(root, exclude, rel = "") {
   const abs = path.join(root, rel);
   for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
-    if (!e.isDirectory() || exclude.includes(e.name)) continue;
+    if (e.isSymbolicLink() || !e.isDirectory() || exclude.includes(e.name)) continue;
     const r = rel ? `${rel}/${e.name}` : e.name;
     pruneEmptyDirs(root, exclude, r);
     if (fs.readdirSync(path.join(root, r)).length === 0) fs.rmdirSync(path.join(root, r));
   }
+}
+
+// The three heaviest directories in a tree, so an over-budget checkpoint can say
+// WHAT to exclude instead of only how far over it is.
+function heaviest(root, entries, n = 3) {
+  const byTop = new Map();
+  for (const e of entries) {
+    if (e.type !== "file") continue;
+    const top = e.rel.split("/")[0];
+    let size = 0;
+    try {
+      size = fs.statSync(path.join(root, e.rel)).size;
+    } catch {
+      /* vanished mid-walk */
+    }
+    byTop.set(top, (byTop.get(top) || 0) + size);
+  }
+  return [...byTop.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, n)
+    .map(([name, bytes]) => `${name} (${Math.round(bytes / 1e6)} MB)`);
+}
+
+// A fork is made from the checkpoint TREE, which never held the excluded dirs.
+// Without them `npm test` in a fork cannot resolve a single import, so the one
+// thing forks exist for — running the real suite down K branches at once — does
+// not run. Linking each excluded dir back at the original is what makes it work
+// at zero copy cost.
+//
+// Writes through such a link land on the ORIGINAL path, which the Landlock
+// enforcer refuses because it is outside the fork's allowlist: the link gives a
+// fork read access to its dependencies and nothing more. With enforcement off
+// (NEFERTARI_ENFORCE_DRIVER=null, or a non-Linux host) that protection is gone
+// and a fork could write into the shared directory — set
+// NEFERTARI_TIMELINE_LINK_EXCLUDED=0 there.
+// existsSync() follows the link and answers false for a dangling one, which is
+// exactly the case that then fails EEXIST on create.
+function lexists(p) {
+  try {
+    fs.lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function linkExcluded(originDir, treeDir, exclude) {
+  if (process.env.NEFERTARI_TIMELINE_LINK_EXCLUDED === "0") return [];
+  const linked = [];
+  for (const name of exclude) {
+    const src = path.join(originDir, name);
+    const dst = path.join(treeDir, name);
+    if (!fs.existsSync(src) || lexists(dst)) continue;
+    try {
+      fs.symlinkSync(src, dst, "junction");
+      linked.push(name);
+    } catch {
+      // Windows without developer mode refuses symlinks to a non-admin. Not
+      // fatal: the fork simply lacks its dependencies, which is the old behaviour.
+    }
+  }
+  return linked;
 }
 
 // ---- checkpoint ----
@@ -84,27 +181,37 @@ export function checkpoint(dir, { label = "", exclude = DEFAULT_EXCLUDE, meta = 
   const src = path.resolve(dir);
   if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) throw new Error(`not a directory: ${src}`);
 
-  const files = walk(src, exclude);
+  const entries = walk(src, exclude);
   let bytes = 0;
-  for (const r of files) bytes += fs.statSync(path.join(src, r)).size;
+  for (const e of entries) {
+    if (e.type !== "file") continue; // a link costs its target's name, not its target
+    try {
+      bytes += fs.statSync(path.join(src, e.rel)).size;
+    } catch {
+      /* vanished mid-walk */
+    }
+  }
   if (bytes > maxBytes()) {
     throw new Error(
-      `tree is ${Math.round(bytes / 1e6)} MB, over the ${Math.round(maxBytes() / 1e6)} MB checkpoint guard ` +
-        `(raise NEFERTARI_TIMELINE_MAX_MB or exclude heavy dirs)`
+      `tree is ${Math.round(bytes / 1e6)} MB, over the ${Math.round(maxBytes() / 1e6)} MB checkpoint guard. ` +
+        `Heaviest: ${heaviest(src, entries).join(", ")}. ` +
+        `Raise NEFERTARI_TIMELINE_MAX_MB, or pass exclude to leave those out.`
     );
   }
 
   const id = newId("ckpt");
   const base = ckptDir(id);
   fs.mkdirSync(path.join(base, "tree"), { recursive: true }); // empty trees are valid checkpoints
-  copyFiles(src, path.join(base, "tree"), files);
+  materialize(src, path.join(base, "tree"), entries);
+  const links = entries.filter((e) => e.type === "link").length;
   const manifest = {
     id,
     kind: "checkpoint",
     label,
     dir: src,
     exclude,
-    files: files.length,
+    files: entries.length - links,
+    links,
     bytes,
     createdAt: new Date().toISOString(),
     meta,
@@ -115,17 +222,25 @@ export function checkpoint(dir, { label = "", exclude = DEFAULT_EXCLUDE, meta = 
 
 // ---- fork: K isolated working copies of a checkpoint ----
 export function fork(checkpointId, n = 1) {
-  readManifest(ckptDir(checkpointId), "checkpoint", checkpointId); // existence check
+  const cm = readManifest(ckptDir(checkpointId), "checkpoint", checkpointId);
   const srcTree = path.join(ckptDir(checkpointId), "tree");
-  const files = walk(srcTree, []);
+  const entries = walk(srcTree, []);
   const forks = [];
   for (let i = 0; i < n; i++) {
     const id = newId("fork");
     const base = forkDir(id);
     const tree = path.join(base, "tree");
     fs.mkdirSync(tree, { recursive: true }); // empty trees are valid forks
-    copyFiles(srcTree, tree, files);
-    const manifest = { id, kind: "fork", from: checkpointId, path: tree, createdAt: new Date().toISOString() };
+    materialize(srcTree, tree, entries);
+    const linked = linkExcluded(cm.dir, tree, cm.exclude || []);
+    const manifest = {
+      id,
+      kind: "fork",
+      from: checkpointId,
+      path: tree,
+      linked,
+      createdAt: new Date().toISOString(),
+    };
     fs.writeFileSync(path.join(base, "manifest.json"), JSON.stringify(manifest, null, 2));
     forks.push(manifest);
   }
@@ -134,13 +249,18 @@ export function fork(checkpointId, n = 1) {
 
 // Make `dir` identical to `srcTree` (checkpoint or fork content), leaving
 // excluded dirs untouched at any depth. Deletes files that exist now but not in
-// the source, then copies the source over.
+// the source, then reproduces the source over it.
+//
+// The source is walked with the SAME exclude list as the target: a fork carries
+// a link named after each excluded dir, and copying that link into the working
+// dir would replace real dependencies with a link pointing at themselves.
 function syncTree(srcTree, dir, exclude) {
-  const want = new Set(walk(srcTree, []));
+  const src = walk(srcTree, exclude);
+  const want = new Set(rels(src));
   const have = walk(dir, exclude);
-  for (const r of have) if (!want.has(r)) fs.rmSync(path.join(dir, r));
+  for (const e of have) if (!want.has(e.rel)) fs.rmSync(path.join(dir, e.rel), { force: true });
   pruneEmptyDirs(dir, exclude);
-  copyFiles(srcTree, dir, [...want]);
+  materialize(srcTree, dir, src);
 }
 
 // ---- restore: put a working dir back to checkpoint T (auto-checkpoint first) ----
