@@ -23,3 +23,21 @@ export function tail(n = 20) {
     }
   });
 }
+
+// The whole journal, oldest first. tail() answers "what just happened"; this
+// answers "what has this workspace been through", which is what a session
+// resuming with no memory of it needs. Capped so a long-lived home cannot turn
+// one question into an unbounded read.
+export function readAll(max = 20000) {
+  if (!fs.existsSync(JOURNAL_FILE)) return [];
+  const body = fs.readFileSync(JOURNAL_FILE, "utf8").trim();
+  if (!body) return [];
+  const lines = body.split("\n");
+  return (lines.length > max ? lines.slice(-max) : lines).map((l) => {
+    try {
+      return JSON.parse(l);
+    } catch {
+      return { raw: l };
+    }
+  });
+}

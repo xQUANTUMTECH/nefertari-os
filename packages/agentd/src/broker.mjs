@@ -197,6 +197,7 @@ export function classifyTrajectories(trajectories, evalCmd) {
 export function classify(tool, args) {
   switch (tool) {
     case "fs_read":
+    case "working_set":
     case "sys_status":
     case "journal_tail":
     case "pending_list":

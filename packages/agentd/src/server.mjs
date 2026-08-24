@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { classify, CLASS, PLAN_TOOLS } from "./broker.mjs";
 import { normalizeSteps, normalizeTrajectories } from "./planshape.mjs";
+import { workingSet } from "./workingset.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as timeline from "./timeline.mjs";
@@ -300,6 +301,23 @@ server.tool(
     const r = timeline.promote(fork_id, dir);
     record("timeline_promote", { fork_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
     return text({ status: "promoted", ...r });
+  }
+);
+
+server.tool(
+  "working_set",
+  "What THIS workspace has already been through, replayed from the journal: the files read, written and deleted, the commands run, and — the part worth the call — which of those files CHANGED underneath since the last action recorded against them. Call it first in a resumed session instead of re-exploring with ls/find/cat: one call in place of the probe commands, and it names where a stale assumption is about to cost a wrong edit. Only records what went through Nefertari; work done outside it leaves no trace and the answer says so.",
+  {
+    dir: z.string().optional().describe("Restrict to paths under this directory"),
+    since: z.string().optional().describe("ISO timestamp; ignore anything older"),
+    limit: z.number().int().min(1).max(200).optional().describe("Max files returned (default 40)"),
+  },
+  async ({ dir, since, limit }) => {
+    const g = gate("working_set", { dir });
+    if (g.gated) return g.response;
+    const result = workingSet({ dir, since, limit });
+    record("working_set", { dir, since }, g.cls, `${result.files.length} files, ${result.changed_since_last_action.length} changed`);
+    return text(result);
   }
 );
 
