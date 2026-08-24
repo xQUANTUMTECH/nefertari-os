@@ -2,7 +2,7 @@
 name = "nefertari-enforce"
 version = "0.1.0"
 edition = "2021"
-license = "AGPL-3.0-or-later"
+license = "MIT"
 description = "Kernel-enforced reversibility: run a command that can only write to an explicit allowlist (Landlock)."
 
 [[bin]]

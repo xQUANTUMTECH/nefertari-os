@@ -31,7 +31,7 @@ FROM node:20-slim AS runtime
 LABEL org.opencontainers.image.title="nefertari-agentd" \
       org.opencontainers.image.description="AI-native system layer: reversible actions + human gate + audit journal" \
       org.opencontainers.image.source="https://github.com/xQUANTUMTECH/nefertari-os" \
-      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+      org.opencontainers.image.licenses="MIT"
 
 ENV NODE_ENV=production \
     NEFERTARI_HOME=/data \

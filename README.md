@@ -2,7 +2,10 @@
 
 **The first system layer built for the agent as caller, not the human as caller.** The agent is not an app — it is a first-class citizen of the machine: full OS access at intent-speed, a live world it doesn’t rediscover every turn, forkable time, and continuity (self-wake, journal, deltas) — without dumping the whole machine into the prompt.
 
-> Status: early prototype (phase 1–2a — `agentd` + broker + timeline/plan/trajectories on WSL2 / any Linux).  
+> Status: early prototype — `agentd` + broker + timeline/plan/trajectories.
+> Runs wherever Docker runs: enforcement is real **inside the container**, so macOS and Windows get it
+> through Docker Desktop, not just Linux natively (verified at Landlock ABI 3, unprivileged, no seccomp
+> exemption). Any MCP client drives it — Claude Code, Codex, Hermes Agent, ania, your own loop.  
 > Thesis: [docs/VISION.md](docs/VISION.md) · Proportionality: [docs/PROPORTIONALITY.md](docs/PROPORTIONALITY.md) · Neural tissue (NexusDB/Hebbian): [docs/NEURAL-LAYER-NEXUSDB.md](docs/NEURAL-LAYER-NEXUSDB.md)
 
 ## The thesis
@@ -121,6 +124,20 @@ A 30-step procedure costs 1 model turn instead of 30. The single tools and the
 plan steps share one implementation (`src/ops.mjs`) — same snapshotting, same
 kernel enforcement, whichever door the action comes through.
 
+Steps take the shape a model finds easiest to emit — flat, no `args` object to
+nest — and the array may arrive as a JSON string, which is what stringifying
+models send:
+
+```json
+[{"tool":"fs_write","path":"src/app.js","content":"…"},
+ {"tool":"shell","command":"npm test"}]
+```
+
+The older `{"tool":…,"args":{…}}` form still works. This is not cosmetic: three
+levels of nesting is where cheap models fail, and a primitive only a flagship
+model can address is not a primitive. A refusal names the step, the tool and the
+missing field, so the next turn fixes it instead of guessing again.
+
 Plans are **fork-portable**: relative fs paths resolve inside the plan's dir and
 cannot escape it (an escape rolls the plan back). That's what makes the next
 primitive possible — the same plan can run against a fork whose path the caller
@@ -173,6 +190,17 @@ Landlock restriction is inherited and cannot be dropped:
 cd packages/enforce && cargo build --release
 export NEFERTARI_ENFORCE_BIN=$PWD/target/release/nefertari-enforce   # agentd auto-detects it
 ```
+
+The container image carries that binary already, so `docker compose up` is enforced out of the box.
+Do not take the claim on trust — the test writes inside the allowlist, writes outside it, and then
+reads the filesystem to see which one landed:
+
+```bash
+bash packages/agentd/test/enforce-docker.sh
+```
+
+Landlock confines **writes**, which is what reversibility needs; it is not confidentiality, and
+ABI 3 carries no network rules. An egress boundary is the broker's job, or the `landrun` driver's.
 
 The `custom` driver is the agnostic escape hatch — plug in any tool without
 touching code:
@@ -293,4 +321,6 @@ no secret ever touches a command line).
 
 ## License
 
-TBD (leaning AGPL / fair-code — open core).
+[MIT](LICENSE). Use it, fork it, ship it inside something commercial — no reciprocity clause and
+nothing to ask permission for. A system layer earns its place by being adopted, and a licence that
+makes a company's lawyer stop and think is a licence that stops adoption.

@@ -182,21 +182,72 @@ async function runOne(run) {
   };
 }
 
+// One run per cell measures a sample of one, and a sample of one cannot tell a
+// real effect from a model having a good turn. BENCH_RUNS repeats every cell and
+// the summary reports the MEDIAN with its spread, so a reader can see how much
+// of the gap is signal. Everything raw is still written out: the median is a
+// reading of the data, never a replacement for it.
 const filter = process.argv[2] || "";
+const N = Math.max(1, Number(process.env.BENCH_RUNS) || 1);
+
+const median = (xs) => {
+  if (!xs.length) return null;
+  const a = [...xs].sort((x, y) => x - y);
+  const m = a.length >> 1;
+  const v = a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  return Math.round(v * 10) / 10;
+};
+const spread = (xs) => (xs.length ? `${Math.min(...xs)}–${Math.max(...xs)}` : "–");
+
 const results = [];
+const cells = [];
 for (const run of RUNS.filter((r) => !filter || r.bench.startsWith(filter))) {
-  process.stdout.write(`▶ ${run.bench} / ${run.mode} … `);
-  try {
-    const r = await runOne(run);
-    results.push(r);
-    console.log(`${r.success ? "OK" : "FAIL"}  turns=${r.turns} calls=${r.toolCalls} tok=${r.totalTok} wall=${r.wallS}s${r.errors ? ` errs=${r.errors}` : ""}`);
-  } catch (e) {
-    console.log(`ERROR: ${String(e.message).slice(0, 200)}`);
-    results.push({ model: P.model, bench: run.bench, mode: run.mode, success: false, error: String(e.message).slice(0, 200) });
+  const got = [];
+  for (let i = 1; i <= N; i++) {
+    process.stdout.write(`▶ ${run.bench} / ${run.mode}${N > 1 ? ` [${i}/${N}]` : ""} … `);
+    try {
+      const r = { ...(await runOne(run)), run: i };
+      results.push(r);
+      got.push(r);
+      console.log(`${r.success ? "OK" : "FAIL"}  turns=${r.turns} calls=${r.toolCalls} tok=${r.totalTok} wall=${r.wallS}s${r.errors ? ` errs=${r.errors}` : ""}`);
+    } catch (e) {
+      console.log(`ERROR: ${String(e.message).slice(0, 200)}`);
+      results.push({ model: P.model, bench: run.bench, mode: run.mode, run: i, success: false, error: String(e.message).slice(0, 200) });
+    }
   }
+  // Only successful runs shape the medians: a failed run has no meaningful turn
+  // count, and averaging it in would quietly reward giving up early.
+  const ok = got.filter((r) => r.success);
+  cells.push({
+    model: P.model,
+    bench: run.bench,
+    mode: run.mode,
+    runs: N,
+    successes: ok.length,
+    turns_median: median(ok.map((r) => r.turns)),
+    turns_range: spread(ok.map((r) => r.turns)),
+    tool_calls_median: median(ok.map((r) => r.toolCalls)),
+    tokens_median: median(ok.map((r) => r.totalTok)),
+    tokens_range: spread(ok.map((r) => r.totalTok)),
+    wall_s_median: median(ok.map((r) => r.wallS)),
+    wall_s_range: spread(ok.map((r) => r.wallS)),
+  });
 }
 
 const OUT = process.env.BENCH_OUT || path.join(import.meta.dirname, "bench-results.json");
 const prev = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, "utf8")) : [];
 fs.writeFileSync(OUT, JSON.stringify([...prev, ...results], null, 2));
-console.log(`\nresults appended to ${OUT}`);
+
+const SUM = process.env.BENCH_SUMMARY || path.join(import.meta.dirname, "bench-summary.json");
+const prevSum = fs.existsSync(SUM) ? JSON.parse(fs.readFileSync(SUM, "utf8")) : [];
+fs.writeFileSync(SUM, JSON.stringify([...prevSum, ...cells], null, 2));
+
+console.log(`\n${P.model} — median of ${N} run${N > 1 ? "s" : ""} per cell`);
+for (const c of cells) {
+  const label = `${c.bench}/${c.mode}`.padEnd(20);
+  console.log(
+    `  ${label} ${c.successes}/${c.runs} ok   turns ${c.turns_median} (${c.turns_range})   ` +
+      `tok ${c.tokens_median} (${c.tokens_range})   wall ${c.wall_s_median}s (${c.wall_s_range})`
+  );
+}
+console.log(`\nraw -> ${OUT}\nsummary -> ${SUM}`);
