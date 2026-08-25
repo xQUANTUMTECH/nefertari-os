@@ -340,10 +340,12 @@ init proprio (systemd resta).
 - [x] **`inferd.mjs`**: supervisione dell'inferenza locale — `c343e10`. Congelata: **0 µs su 700 ms**
 - [x] **`speculate.mjs`**: il checkpoint fatto nella finestra di idle — `c1ad1c6`.
       **103 ms a freddo → 9 ms preparato**, e sette test su otto sono di correttezza
+- [x] **Firma Ed25519 per entry** — §4.4. La catena rende la manomissione *visibile*; la firma
+      impedisce di riscrivere il registro da capo. Un falsario può ricalcolare ogni hash, non può
+      firmare, e una entry non firmata dopo una firmata viene rifiutata. Resta aperta la troncatura:
+      nessuna firma può protestare per la propria assenza, serve un àncora esterna
 
 ### Prossime, ordinate
-- [ ] **Firma Ed25519 sopra la catena di hash** *(giorni)* — §4.4. La catena rende visibile la
-      manomissione; la firma è ciò che impedisce di riscriverla da capo
 - [ ] **Idempotenza per hash d'azione** *(giorni)* — §4.3
 - [ ] **H4 gate-freeze** via `cgroup.freeze` *(giorni ormai)* — il meccanismo è già verificato in
       `cgroups.mjs`, manca solo agganciarlo al gate

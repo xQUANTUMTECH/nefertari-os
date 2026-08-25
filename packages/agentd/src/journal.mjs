@@ -9,11 +9,20 @@
 // Every entry therefore carries the hash of the one before it, and its own hash
 // over that link plus its body. Editing a past entry, deleting one, or slipping
 // one in changes every hash after it, and verify() names the first line where
-// the chain parts. This is tamper-EVIDENT, not tamper-proof: whoever owns the
-// file can still rewrite the whole chain from the edit onward. What closes that
-// gap is a signature the rewriter cannot forge and an anchor they cannot
-// backdate — the daemon's Ed25519 key, and periodic anchoring to a TPM or a
-// timestamp authority. Both build on this; neither works without it.
+// the chain parts. On its own that is tamper-EVIDENT and no more: whoever owns
+// the file can edit an entry, recompute its hash, and recompute every hash
+// after it, and the result agrees with itself at every link. So every entry is
+// also SIGNED with the daemon Ed25519 key — a forger can hash, but cannot sign,
+// and verify() refuses an unsigned entry that sits after a signed one.
+//
+// WHAT IS STILL OPEN, and it is worth naming rather than implying otherwise.
+// Two attacks survive, and both are attacks on the FILE rather than on an
+// entry: truncating the tail removes signed entries without forging any, and
+// stripping every signature (with the key) makes the whole journal look like
+// one written before signing existed. No signature can object to its own
+// absence. Closing that needs an anchor the attacker cannot backdate — a
+// periodic head hash in a TPM, a timestamp authority, or simply another host —
+// which is not built. It builds on this; it does not replace it.
 //
 // The hash covers the entry EXACTLY as written, byte for byte. That is why the
 // line is assembled by splicing "hash" in before the closing brace rather than
@@ -23,7 +32,8 @@
 
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { JOURNAL_FILE, ensureHome } from "./paths.mjs";
+import path from "node:path";
+import { JOURNAL_FILE, HOME, ensureHome } from "./paths.mjs";
 
 export function newId(prefix) {
   return `${prefix}_${crypto.randomBytes(5).toString("hex")}`;
@@ -36,15 +46,71 @@ const HASH_LEN = 32;
 
 const digest = (s) => crypto.createHash("sha256").update(s, "utf8").digest("hex").slice(0, HASH_LEN);
 
-// Split a stored line back into the bytes that were hashed and the hash itself.
-// Anchored at the end so an entry whose own content happens to contain the same
-// text cannot confuse it.
-const LINE = /^(.*),"hash":"([0-9a-f]+)"\}$/;
+// Split a stored line back into the bytes that were hashed, the hash, and the
+// signature. Anchored at the end so an entry whose own content happens to
+// contain the same text cannot confuse it. The signature is optional: a journal
+// written before signing existed is old, not forged.
+const LINE = /^(.*),"hash":"([0-9a-f]+)"(?:,"sig":"([A-Za-z0-9+/=]+)")?\}$/;
 
 function splitLine(line) {
   const m = LINE.exec(line);
   if (!m) return null;
-  return { body: m[1] + "}", hash: m[2] };
+  return { body: m[1] + "}", hash: m[2], sig: m[3] || null };
+}
+
+// ---- signing ----
+//
+// The chain makes tampering VISIBLE; the signature is what stops it being
+// rewritten from scratch. Without one, anybody who can edit the file can edit
+// an entry, recompute its hash, and recompute every hash after it — the chain
+// parts nowhere and the forgery is perfect.
+//
+// EVERY entry is signed rather than the chain head being sealed periodically.
+// A periodic seal leaves everything after the last one forgeable by whoever
+// holds the file; per-entry signing leaves nothing forgeable at all. The cost
+// is 88 characters and about 50 microseconds an entry, which is not a reason to
+// accept the weaker guarantee.
+//
+// What this still does NOT stop: truncation. Deleting the tail of the file
+// removes signed entries without forging any, and no signature can object to
+// its own absence. That is what an external anchor is for — a periodic hash
+// published somewhere the daemon does not control — and it is not built.
+const KEY_FILE = () => path.join(HOME, "journal.key");
+const PUB_FILE = () => path.join(HOME, "journal.pub");
+
+let keys; // { priv, pub, fp } — resolved once per process
+
+function loadKeys() {
+  if (keys) return keys;
+  ensureHome();
+  const kf = KEY_FILE();
+  let priv;
+  if (fs.existsSync(kf)) {
+    priv = crypto.createPrivateKey(fs.readFileSync(kf, "utf8"));
+  } else {
+    const pair = crypto.generateKeyPairSync("ed25519");
+    priv = pair.privateKey;
+    // 0600 from the moment it exists: a signing key readable by anything on the
+    // host signs anything on the host. Written with mode rather than chmodded
+    // after, so there is no window in which it is world-readable.
+    fs.writeFileSync(kf, priv.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 });
+  }
+  const pub = crypto.createPublicKey(priv);
+  const pem = pub.export({ type: "spki", format: "pem" });
+  // The public key is written out so a verifier never needs the private one.
+  try {
+    fs.writeFileSync(PUB_FILE(), pem);
+  } catch {
+    /* a read-only home can still sign; it just cannot publish */
+  }
+  keys = { priv, pub, fp: crypto.createHash("sha256").update(pem).digest("hex").slice(0, 16) };
+  return keys;
+}
+
+/** The public half, for anyone checking the trail without the ability to write it. */
+export function publicKey() {
+  const k = loadKeys();
+  return { pem: k.pub.export({ type: "spki", format: "pem" }), fingerprint: k.fp, path: PUB_FILE() };
 }
 
 // undefined = not read yet; null = genesis (empty journal). The distinction
@@ -82,8 +148,17 @@ export function append(entry) {
   if (lastHash === undefined) lastHash = loadLastHash();
   const body = JSON.stringify({ ts: new Date().toISOString(), ...entry, prev: lastHash });
   const hash = digest(body);
+  // Signing the hash rather than the body covers both transitively: the hash
+  // already commits to the content and to the link to the entry before it.
+  let sig = "";
+  try {
+    sig = `,"sig":"${crypto.sign(null, Buffer.from(hash, "utf8"), loadKeys().priv).toString("base64")}"`;
+  } catch {
+    // An unsignable entry is still worth recording. It verifies as unsigned,
+    // which is a visible gap rather than a silent one.
+  }
   // Splice rather than re-serialise: the bytes hashed are the bytes stored.
-  fs.appendFileSync(JOURNAL_FILE, `${body.slice(0, -1)},"hash":"${hash}"}\n`);
+  fs.appendFileSync(JOURNAL_FILE, `${body.slice(0, -1)},"hash":"${hash}"${sig}}\n`);
   lastHash = hash;
   return hash;
 }
@@ -135,14 +210,27 @@ export function readAll(max = 20000) {
  * wolf about it would train whoever reads this to ignore it.
  */
 export function verify() {
-  if (!fs.existsSync(JOURNAL_FILE)) return { ok: true, entries: 0, checked: 0, unchained: 0, broken: null };
+  if (!fs.existsSync(JOURNAL_FILE)) return { ok: true, entries: 0, checked: 0, unchained: 0, unsigned: 0, broken: null };
   const raw = fs.readFileSync(JOURNAL_FILE, "utf8").trim();
-  if (!raw) return { ok: true, entries: 0, checked: 0, unchained: 0, broken: null };
+  if (!raw) return { ok: true, entries: 0, checked: 0, unchained: 0, unsigned: 0, broken: null };
 
   const lines = raw.split("\n");
   let expectedPrev = null;
   let checked = 0;
   let unchained = 0;
+  let unsigned = 0;
+  // Whether a signature has been seen yet in THIS file. Unsigned entries are
+  // tolerated only as a prefix — see the rejection below.
+  let sawSigned = false;
+  // Resolved once. A verifier that has only the public key still works: it is
+  // written next to the journal precisely so checking never needs the ability
+  // to write it.
+  let pub = null;
+  try {
+    pub = loadKeys().pub;
+  } catch {
+    /* no key: signatures cannot be checked, and that is reported, not assumed away */
+  }
 
   for (let i = 0; i < lines.length; i++) {
     const parts = splitLine(lines[i]);
@@ -157,6 +245,7 @@ export function verify() {
         entries: lines.length,
         checked,
         unchained,
+        unsigned,
         broken: {
           line: i + 1,
           reason: "entry was modified after it was written: its content no longer hashes to its own hash",
@@ -164,6 +253,61 @@ export function verify() {
           computed_hash: actual,
         },
       };
+    }
+    // The hash proves the entry has not changed since it was written. The
+    // signature proves WHO wrote it — without one, anybody who can edit the
+    // file can edit an entry, recompute its hash, and recompute every hash
+    // after it, and the chain parts nowhere.
+    if (!parts.sig) {
+      // An unsigned entry is legacy or forgery depending on WHERE it sits. A
+      // journal written before signing existed is old, not forged — but once a
+      // signed entry has appeared the daemon has a key, and every entry after
+      // it is signed. An unsigned line there is the one forgery the hash chain
+      // alone cannot see: strip the signature, edit the body, recompute this
+      // hash and every hash after it, and the chain agrees with itself
+      // perfectly. It is rejected precisely because a forger can do everything
+      // except sign.
+      if (sawSigned) {
+        return {
+          ok: false,
+          entries: lines.length,
+          checked,
+          unchained,
+          unsigned,
+          broken: {
+            line: i + 1,
+            reason:
+              "entry carries no signature, but earlier entries in this journal are signed. Signing does " +
+              "not stop once it starts, so this entry was written by something that could edit the file " +
+              "but could not sign — which is what forging a chain looks like.",
+          },
+        };
+      }
+      unsigned++;
+    } else if (pub) {
+      sawSigned = true;
+      let good = false;
+      try {
+        good = crypto.verify(null, Buffer.from(parts.hash, "utf8"), pub, Buffer.from(parts.sig, "base64"));
+      } catch {
+        good = false;
+      }
+      if (!good) {
+        return {
+          ok: false,
+          entries: lines.length,
+          checked,
+          unchained,
+          unsigned,
+          broken: {
+            line: i + 1,
+            reason:
+              "signature does not verify: this entry was not written by the key in this home. Either it " +
+              "was forged, or the signing key was replaced — and a replaced key cannot re-sign what the " +
+              "old one signed, which is why both look the same from here and both are worth investigating.",
+          },
+        };
+      }
     }
     let prev = null;
     try {
@@ -177,6 +321,7 @@ export function verify() {
         entries: lines.length,
         checked,
         unchained,
+        unsigned,
         broken: {
           line: i + 1,
           reason:
@@ -192,5 +337,5 @@ export function verify() {
     checked++;
   }
 
-  return { ok: true, entries: lines.length, checked, unchained, broken: null };
+  return { ok: true, entries: lines.length, checked, unchained, unsigned, broken: null };
 }

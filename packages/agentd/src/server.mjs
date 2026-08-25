@@ -376,13 +376,13 @@ server.tool(
 
 server.tool(
   "journal_verify",
-  "Check that the audit trail has not been altered. Every entry carries the hash of the one before it, so editing, deleting, reordering or inserting an entry breaks the chain at a line this names. Tamper-EVIDENT, not tamper-proof: whoever owns the file can still rewrite the chain from the edit onward — a signature and an external anchor are what close that, and both build on this.",
+  "Check that the audit trail has not been altered. Every entry carries the hash of the one before it AND a signature from this daemon key, so editing, deleting, reordering or inserting an entry breaks the chain at a line this names — and rewriting the chain to hide that fails on the signature, which a forger cannot produce. What it still cannot see is truncation: no signature can object to its own absence, and closing that needs an external anchor.",
   {},
   async () => {
     const g = gate("journal_verify", {});
     if (g.gated) return g.response;
     const v = journal.verify();
-    record("journal_verify", {}, g.cls, v.ok ? `intact (${v.checked} entries)` : `BROKEN at line ${v.broken.line}`);
+    record("journal_verify", {}, g.cls, v.ok ? `intact (${v.checked} entries, ${v.unsigned} unsigned)` : `BROKEN at line ${v.broken.line}`);
     return text(v);
   }
 );

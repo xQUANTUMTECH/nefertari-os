@@ -299,9 +299,12 @@ be sending it. `NEFERTARI_EGRESS=redact|warn|refuse|off`.
 **A journal that can be a witness.** When the caller is human, the record is
 corroborated by the human: they testify. An agent cannot. So entries are
 hash-chained — editing, deleting, reordering or inserting one breaks the chain at
-a line `journal_verify` names. Tamper-evident, not tamper-proof: a signature and
-an external anchor are what close that, and both build on this.
-
+a line `journal_verify` names — and each one is **signed** with the daemon Ed25519
+key, because a chain alone only makes tampering visible: a forger can edit an
+entry, recompute its hash, and recompute every hash after it. They cannot sign,
+and an unsigned entry sitting after a signed one is refused. What is still open
+is truncation — no signature can object to its own absence — and that needs an
+external anchor, which builds on this rather than replacing it.
 **`working_set`.** The journal already records every file read, written and
 deleted. Replayed, it is the answer a resuming session actually needs — not
 "what is here" but **what moved while I was gone**: a file whose mtime is newer
