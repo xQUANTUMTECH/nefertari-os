@@ -344,6 +344,20 @@ init proprio (systemd resta).
       impedisce di riscrivere il registro da capo. Un falsario può ricalcolare ogni hash, non può
       firmare, e una entry non firmata dopo una firmata viene rifiutata. Resta aperta la troncatura:
       nessuna firma può protestare per la propria assenza, serve un àncora esterna
+- [x] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** — la copia speculativa non gira più
+      dentro il demone. *Numero: copiare 128MB in-process blocca l'event loop per **264 ms**, nel
+      figlio per **0 ms**.* Il difetto non era teorico: `copyFileSync` non cede, e il demone è ciò
+      che ogni tool call attraversa — una speculazione che può bloccare una chiamata vera è peggio
+      di nessuna speculazione, perché il costo cade proprio sul percorso che doveva accelerare.
+      In un figlio diventano possibili due cose che prima no: `cpu.idle` (gira solo quando la CPU
+      non la vuole nessun altro) e la **kill immediata** all'arrivo di una tool call — uccidere un
+      processo è istantaneo e totale, abbandonare un loop no.
+      **Trappola trovata nel test:** il primo misuratore di stallo usava `setInterval` e lo
+      azzerava appena `run` risolveva; ma un corpo sincrono risolve in una *microtask* e i timer
+      sono *macrotask*, quindi l'interval veniva cancellato prima di scattare anche una volta e
+      ogni misura tornava uno 0 ms convinto. Un metro che legge zero su un blocco noto di 300 ms
+      non fallisce: ti dà ragione. Ora il metro viene verificato contro un blocco noto prima di
+      essere usato
 - [x] **`wait_for(condizione)`** — svegliarsi su evento, non su orario. Il demone guarda al posto
       dell'agente e la chiamata non torna finché la condizione non regge. *Numero: una attesa
       coperta da **1 sola tool call**, 7 poll fatti dal demone che l'agente non ha mai visto —
@@ -372,8 +386,6 @@ init proprio (systemd resta).
       spariva
 
 ### Prossime, ordinate
-- [ ] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** invece che in-process *(giorni)* —
-      la macchina c'è, deve solo guadagnarselo
 - [ ] **Lease manager su URI esterni** *(1–2 settimane)* — §4.5
 - [ ] **Scheduler a budget token** *(2 settimane)* — §4.2
 - [ ] **H2 fork overlayfs + upper tmpfs** *(2–3 settimane)* — sblocca anche gli errori con write-set

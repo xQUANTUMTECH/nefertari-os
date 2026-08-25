@@ -135,6 +135,30 @@ at checkpoint time. A speculative optimisation must never be able to produce a
 wrong answer, only a useless one.
 
 ---
+## Speculation that cannot stall the thing it speeds up
+
+The pre-built copy used to run inside the daemon, yielding between files. One
+large file was enough to break that: `copyFileSync` does not yield, and the
+daemon is what every tool call goes through.
+
+| Copying 128MB | Worst event-loop stall |
+|---|---|
+| In the daemon | **264 ms** |
+| In a child | **0 ms** |
+
+264 ms is how long a tool call arriving at that moment would have waited — paid
+on the exact path speculation exists to make faster. In a child it is also
+possible to put the copy under `cpu.idle`, where it runs only when nothing else
+wants the CPU, and to kill it outright when a call arrives rather than asking a
+loop to stop.
+
+The measurement itself needed checking before it could be believed: the first
+stall meter reported a confident 0 ms for a known 300 ms block, because it
+cleared its timer in a microtask before any macrotask could fire. It is now
+validated against a known stall in the test that uses it.
+
+---
+
 ## A goal waiting for a human
 
 An irreversible action stops at the gate until a person approves it. What that

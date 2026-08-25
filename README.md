@@ -366,6 +366,13 @@ file only where that file's mtime is strictly older than the moment the pre-buil
 began; everything else is copied for real. A speculative optimisation must never
 be able to produce a wrong answer, only a useless one.
 
+Preparation runs in a **child** rather than in the daemon, and under `cpu.idle`
+where the kernel allows it. The reason is measurable: copying 128MB in-process
+stalls the event loop for **264 ms** and in a child for **0 ms** — and that
+stall would have been paid by whatever tool call arrived at that moment, which
+is the one path speculation is supposed to make faster. A child can also be
+killed outright when a call arrives, instead of being asked to stop.
+
 Each degrades to nothing on hosts that cannot support it — cgroups need Linux and
 a delegated subtree, the local model is optional — and says so rather than
 pretending.

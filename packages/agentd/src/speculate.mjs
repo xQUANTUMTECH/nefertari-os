@@ -30,6 +30,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { TIMELINE_DIR, ensureHome } from "./paths.mjs";
 import { newId } from "./journal.mjs";
+import { spawn } from "node:child_process";
+import * as cgroups from "./cgroups.mjs";
 
 const SPEC_DIR = () => path.join(TIMELINE_DIR, "speculative");
 
@@ -40,9 +42,9 @@ const LEAD_MS = Number(process.env.NEFERTARI_SPECULATE_DELAY_MS) || 250;
 
 const enabled = () => process.env.NEFERTARI_SPECULATE !== "0";
 
-let pending = null; // { id, dir, startedAt, files, tree, done } — the shadow being built or built
+let pending = null; // { id, dir, startedAt, files, tree, done } — the finished shadow
+let running = null; // { id, out, child, group } — the child currently copying
 let timer = null;
-let aborted = false;
 const stats = { started: 0, completed: 0, abandoned: 0, adopted: 0, rejected: 0, files_reused: 0, files_restaled: 0 };
 
 function walk(root, exclude, rel = "", out = []) {
@@ -62,73 +64,110 @@ function walk(root, exclude, rel = "", out = []) {
   return out;
 }
 
-const yieldToLoop = () => new Promise((r) => setImmediate(r));
+const PREBUILD = path.join(import.meta.dirname, "prebuild.mjs");
 
 /**
- * Build a shadow copy of `dir` in the background. Yields between files and
- * checks for abandonment, so a tool call arriving mid-build stops it inside one
- * file rather than after the whole tree.
+ * Start the shadow copy as a CHILD, and return the handle to it.
+ *
+ * It used to run here, yielding to the event loop between files. That is fine
+ * until one file is large: `copyFileSync` does not yield, so a single big file
+ * blocked the daemon — and the daemon is what every tool call goes through.
+ * Speculation that can stall a real call is worse than none, because the cost
+ * lands on exactly the path it was meant to make faster.
+ *
+ * In a child, two things become possible that were not: the copy can be put
+ * under `cpu.idle`, where it runs only when nothing else wants the CPU, and it
+ * can be KILLED when a tool call arrives. Killing is instant and total;
+ * abandoning a loop is neither.
  */
-async function build(dir, exclude) {
+function startChild(dir, exclude) {
   const id = newId("spec");
-  const tree = path.join(SPEC_DIR(), id, "tree");
-  // The stamp is taken BEFORE reading anything: a file written while we copy it
-  // has an mtime at or after this, so it can never be adopted.
-  const startedAt = Date.now();
-  fs.mkdirSync(tree, { recursive: true });
+  const out = path.join(SPEC_DIR(), id);
+  fs.mkdirSync(out, { recursive: true });
 
-  const files = new Map();
-  const entries = walk(dir, exclude);
+  const argv = [PREBUILD, path.resolve(dir), out, ...exclude];
+  const group = `spec-${process.pid}-${id}`;
+  const cg = cgroups.ensure(group);
+  let background = false;
+  if (cg.ok) background = cgroups.setBackground(group).ok === true;
+
+  // The child joins its own cgroup before exec. Moving it afterwards is a race
+  // the mover usually loses, and here losing it means the copy runs at normal
+  // priority — competing with the very work it exists to stay out of.
+  const child = cg.ok
+    ? spawn("/bin/sh", ["-c", `echo $$ > ${cgroups.procsPath(group)}; exec "$0" "$@"`, process.execPath, ...argv], {
+        stdio: "ignore",
+      })
+    : spawn(process.execPath, argv, { stdio: "ignore" });
+
+  child.unref();
   stats.started += 1;
+  return { id, out, child, group: cg.ok ? group : null, background };
+}
 
-  for (const e of entries) {
-    if (aborted) {
-      stats.abandoned += 1;
-      try {
-        fs.rmSync(path.join(SPEC_DIR(), id), { recursive: true, force: true });
-      } catch {
-        /* the next sweep will get it */
-      }
-      return null;
-    }
-    const src = path.join(dir, e.rel);
-    const dst = path.join(tree, e.rel);
-    try {
-      fs.mkdirSync(path.dirname(dst), { recursive: true });
-      if (e.type === "link") {
-        const target = fs.readlinkSync(src);
-        fs.symlinkSync(target, dst);
-        files.set(e.rel, { type: "link", mtimeMs: fs.lstatSync(src).mtimeMs });
-      } else {
-        const st = fs.statSync(src);
-        fs.copyFileSync(src, dst, fs.constants.COPYFILE_FICLONE);
-        files.set(e.rel, { type: "file", mtimeMs: st.mtimeMs, size: st.size });
-      }
-    } catch {
-      // A file that vanished or cannot be read mid-build is simply not part of
-      // the shadow; checkpoint will handle it for real.
-    }
-    await yieldToLoop();
+/** Read what the child produced, or null if it did not finish. */
+function adoptChild(job, dir) {
+  let manifest;
+  try {
+    // The manifest is renamed into place last, so its presence is the proof
+    // that the copy completed. A partial tree simply has none.
+    manifest = JSON.parse(fs.readFileSync(path.join(job.out, "manifest.json"), "utf8"));
+  } catch {
+    return null;
   }
-
+  const files = new Map(Object.entries(manifest.files || {}));
   stats.completed += 1;
-  return { id, dir: path.resolve(dir), startedAt, files, tree, done: true };
+  return {
+    id: job.id,
+    dir: path.resolve(dir),
+    startedAt: manifest.startedAt,
+    files,
+    tree: path.join(job.out, "tree"),
+    done: true,
+    background: job.background,
+  };
+}
+
+function stopChild(job) {
+  if (!job) return;
+  try {
+    job.child.kill("SIGKILL");
+  } catch {
+    /* already gone */
+  }
+  if (job.group) cgroups.destroy(job.group);
 }
 
 /** A tool call finished: the window is open. */
 export function windowOpen(dir, exclude = ["node_modules"]) {
   if (!enabled() || !dir) return;
-  aborted = false;
   clearTimeout(timer);
-  timer = setTimeout(async () => {
+  timer = setTimeout(() => {
     ensureHome();
     // One shadow at a time. A second would double the disk cost to hedge a
-    // guess, and the guess is already cheap to be wrong about.
-    if (pending) return;
+    // guess that is already cheap to be wrong about.
+    if (pending || running) return;
     try {
-      pending = await build(dir, exclude);
+      const job = startChild(dir, exclude);
+      running = job;
+      job.child.on("exit", () => {
+        if (running !== job) return; // abandoned; windowClose already cleaned up
+        running = null;
+        const built = adoptChild(job, dir);
+        if (built) {
+          pending = built;
+        } else {
+          stats.abandoned += 1;
+          try {
+            fs.rmSync(job.out, { recursive: true, force: true });
+          } catch {
+            /* swept later */
+          }
+        }
+        if (job.group) cgroups.destroy(job.group);
+      });
     } catch {
-      pending = null;
+      running = null;
     }
   }, LEAD_MS);
   timer.unref?.();
@@ -136,8 +175,19 @@ export function windowOpen(dir, exclude = ["node_modules"]) {
 
 /** A tool call arrived: the window is closed, and real work has priority. */
 export function windowClose() {
-  aborted = true;
   clearTimeout(timer);
+  if (!running) return;
+  const job = running;
+  running = null;
+  stats.abandoned += 1;
+  stopChild(job);
+  // Removed rather than kept: a half-copied tree with no manifest is useless,
+  // and disk left behind by an optimisation is the optimisation costing money.
+  try {
+    fs.rmSync(job.out, { recursive: true, force: true });
+  } catch {
+    /* swept later */
+  }
 }
 
 /**
@@ -207,6 +257,9 @@ export function speculationStats() {
   return {
     ...stats,
     ready: Boolean(pending?.done),
+    // Said rather than implied: without cgroup v2 the copy still runs in a
+    // child, but at ordinary priority.
+    background: Boolean(pending?.background ?? running?.background),
     enabled: enabled(),
   };
 }
@@ -214,7 +267,8 @@ export function speculationStats() {
 /** Test seam. */
 export function reset() {
   clearTimeout(timer);
-  aborted = false;
+  stopChild(running);
+  running = null;
   pending = null;
   for (const k of Object.keys(stats)) stats[k] = 0;
 }
