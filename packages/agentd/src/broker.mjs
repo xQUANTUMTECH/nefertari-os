@@ -206,6 +206,7 @@ export function classify(tool, args) {
     // Watching is not doing. The condition itself is classified separately
     // and refused unless it is read-only — see waitfor.mjs.
     case "wait_for":
+    case "lease_list":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
       return isSensitivePath(args.path)
@@ -215,6 +216,13 @@ export function classify(tool, args) {
       return isSensitivePath(args.path)
         ? { class: CLASS.IRREVERSIBLE, reason: "delete of a sensitive path (startup/cron/service/auth)" }
         : { class: CLASS.REVERSIBLE, reason: "delete covered by snapshot" };
+    // Taking and giving back a lease changes nothing outside this machine:
+    // it is a note in a table saying who intends to. Notified rather than
+    // silent, because who holds what is exactly the kind of thing a human
+    // wants to see when two agents are running.
+    case "lease_acquire":
+    case "lease_release":
+      return { class: CLASS.NOISY, reason: "records an intent to use a shared external resource" };
     case "undo":
       return { class: CLASS.NOISY, reason: "restores prior state" };
     case "timeline_checkpoint":

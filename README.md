@@ -351,6 +351,22 @@ tree is frozen only when it holds nothing but the agent itself, and the answer
 says which case it took. The test builds the deadlock deliberately to show the
 rule is not theoretical.
 
+**Leases on things that are not on this machine.** Every lock a system offers
+is about a local resource. An agent's effects are mostly somewhere else: two
+agents pushing the same branch, deploying the same service or charging the same
+customer are not racing over anything `flock` can see, and the loser finds out
+afterwards. Resources are named by URI — `push:github.com/org/repo`,
+`deploy:railway/api`, `publish:npm/x` — and the **URI is inferred from the
+action**, because an agent that has to remember to take a lease will forget on
+the run that needed it. A second agent's plain `git push` is stopped by a lease
+it never mentioned, and told who holds it, why, and for how long.
+
+Advisory, and worth saying so: it coordinates agents that go through this
+daemon and cannot stop anything that does not. Every lease expires, and one
+held by a process that has died is reclaimed on sight — otherwise the first
+crash teaches an operator to delete the file, which is teaching them to ignore
+the mechanism.
+
 **A goal waiting for a human costs nothing.** An irreversible action stops at
 the gate. Instead of handing the agent a *come back later* — which it answers
 by reasoning about being blocked, polling, and re-explaining itself after a

@@ -358,6 +358,23 @@ init proprio (systemd resta).
       ogni misura tornava uno 0 ms convinto. Un metro che legge zero su un blocco noto di 300 ms
       non fallisce: ti dà ragione. Ora il metro viene verificato contro un blocco noto prima di
       essere usato
+- [x] **Lease manager su URI esterni** — §4.5. Ogni lock che un sistema offre riguarda una risorsa
+      locale; gli effetti di un agente stanno quasi sempre altrove. Due agenti che pushano lo stesso
+      branch non stanno correndo su niente che `flock` possa vedere, e chi perde lo scopre dopo.
+      Tabella per URI (`push:github.com/org/repo`, `deploy:railway/api`, `publish:npm/x`) nel punto
+      che vede ogni azione prima che avvenga.
+      **L'URI è dedotto, non dichiarato:** un agente che deve *ricordarsi* di prendere il lease se
+      lo dimentica proprio nel run in cui serviva. Un `git push` nudo nomina comunque il remote,
+      letto dal repo e non dalla riga di comando. Un'azione che non sappiamo nominare non tiene
+      nessun lease e passa: rifiutare tutto l'irriconoscibile renderebbe il broker inutile la prima
+      volta che qualcuno usa un tool che non conoscevamo.
+      **Advisory, e dirlo conta:** non ferma niente che non passi da Nefertari, e far finta del
+      contrario sarebbe peggio che non averlo, perché qualcuno ci si appoggerebbe.
+      **Scadenza obbligatoria:** un lease di un processo morto viene recuperato a vista, altrimenti
+      il primo crash insegna all'operatore a cancellare il file — cioè a ignorare il meccanismo.
+      **Bug trovato dal test:** `cwd` non arrivava al gate, quindi l'URI veniva letto dalla
+      directory del demone invece che da quella del comando. Ora ci arriva, e il journal smette di
+      registrare `git push` senza dire *dove*
 - [x] **`wait_for(condizione)`** — `db8d187`. Svegliarsi su evento, non su orario: il demone guarda
       al posto dell'agente e la chiamata non torna finché la condizione non regge. *Numero: una attesa
       coperta da **1 sola tool call**, 7 poll fatti dal demone che l'agente non ha mai visto —
@@ -413,7 +430,6 @@ init proprio (systemd resta).
       journalizzato** (chi ha allargato la linea, quando, per quale goal), e nessun profilo deve
       poter rendere invisibile un'azione — al massimo può renderla *autonoma*, mai *non registrata*.
       Il journal firmato di §4.4 è ciò che rende questa distinzione verificabile invece che promessa.
-- [ ] **Lease manager su URI esterni** *(1–2 settimane)* — §4.5
 - [ ] **Scheduler a budget token** *(2 settimane)* — §4.2
 - [ ] **H2 fork overlayfs + upper tmpfs** *(2–3 settimane)* — sblocca anche gli errori con write-set
 - [ ] **Contesto virtuale**: handle + fault-in + budget, con il modello locale come pager *(§3)*

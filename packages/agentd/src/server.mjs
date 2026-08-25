@@ -28,6 +28,7 @@ import * as approvals from "./approvals.mjs";
 import * as dedupe from "./dedupe.mjs";
 import * as gatefreeze from "./gatefreeze.mjs";
 import { waitFor, limits as waitLimits } from "./waitfor.mjs";
+import * as leases from "./leases.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -76,6 +77,26 @@ async function gate(tool, args, fp) {
     journal.append({ tool, args, class: cls, decision: "duplicate_suppressed", reason: dup.reason, ...idle.exit() });
     return { gated: true, response: text(dup) };
   }
+  // A lease somebody else holds is refused before anything else is decided.
+  // Not a gate — a human cannot approve their way past another agent already
+  // being in the resource — and not a queue either: the answer says who has
+  // it and for how long, which is what lets the caller wait, do something
+  // else, or escalate.
+  const clash = leases.conflict(tool, args);
+  if (clash) {
+    journal.append({ tool, args, class: cls, decision: "lease_conflict", uri: clash.uri, held_by: clash.held_by, ...idle.exit() });
+    return {
+      gated: true,
+      response: text({
+        status: "lease_conflict",
+        ...clash,
+        advice:
+          `another agent holds ${clash.uri} for another ${Math.ceil(clash.expires_in_ms / 1000)}s. ` +
+          `Wait for it, work on something that does not touch it, or ask a human whether to take it over.`,
+      }),
+    };
+  }
+
   if (cls === CLASS.IRREVERSIBLE) {
     if (!approvals.consumeApproval(tool, args)) {
       const pend = approvals.listPending();
@@ -201,10 +222,14 @@ server.tool(
   "Run a shell command on the host. Read-only commands pass; known state-changing commands pass with notification; anything else requires human approval first.",
   { command: z.string(), cwd: z.string().optional() },
   async ({ command, cwd }) => {
-    const g = await gate("shell", { command });
+    // cwd goes in: a command means different things in different directories,
+    // and both the resource it touches (see leases.mjs) and the record of what
+    // happened are ambiguous without it. It also makes an approval specific to
+    // the place it was granted for, which is stricter and correct.
+    const g = await gate("shell", { command, cwd });
     if (g.gated) return g.response;
     const r = await ops.opShell({ command, cwd }, g.cls);
-    record("shell", { command }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, { notify: g.cls === CLASS.NOISY, ...r.meta });
+    record("shell", { command, cwd }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, { notify: g.cls === CLASS.NOISY, ...r.meta });
     return text(r.output);
   }
 );
@@ -466,6 +491,60 @@ server.tool(
       { waited_ms: r.waited_ms, polls: r.polls, frozen: r.frozen }
     );
     return text(r);
+  }
+);
+
+server.tool(
+  "lease_acquire",
+  "Claim a shared resource that is NOT on this machine — a git remote, a package name, a deploy target, an account — so another agent working at the same time does not step on it. Advisory: it coordinates agents that go through this daemon, and cannot stop anything that does not. Re-acquiring something you already hold extends it. Every lease expires, and a lease held by a process that has died is reclaimed on sight.",
+  {
+    uri: z.string().describe("What is being claimed, e.g. push:github.com/org/repo, deploy:railway/api, spend:stripe/acct_x"),
+    ttl_ms: z
+      .number()
+      .int()
+      .min(1000)
+      .optional()
+      .describe(`How long you need it (default ${leases.limits.DEFAULT_TTL_MS}, capped at ${leases.limits.MAX_TTL_MS})`),
+    reason: z.string().optional().describe("What you are doing with it — shown to whoever else wants it"),
+  },
+  async ({ uri, ttl_ms, reason }) => {
+    const g = await gate("lease_acquire", { uri });
+    if (g.gated) return g.response;
+    const r = leases.acquire(uri, { ttlMs: ttl_ms, reason: reason || "" });
+    record(
+      "lease_acquire",
+      { uri },
+      g.cls,
+      r.ok ? (r.extended ? `extended ${uri}` : `took ${uri}`) : `refused: held by ${r.held_by}`,
+      { uri, ok: r.ok }
+    );
+    return text(r);
+  }
+);
+
+server.tool(
+  "lease_release",
+  "Give back a lease as soon as the work that needed it is done. Releasing early is the polite half of the mechanism: leases expire on their own, but another agent should not have to wait out a timer for a resource nobody is using. Releasing a lease held by someone else is refused rather than ignored.",
+  { uri: z.string() },
+  async ({ uri }) => {
+    const g = await gate("lease_release", { uri });
+    if (g.gated) return g.response;
+    const r = leases.release(uri);
+    record("lease_release", { uri }, g.cls, r.released ? `released ${uri}` : r.reason || "nothing to release", { uri });
+    return text(r);
+  }
+);
+
+server.tool(
+  "lease_list",
+  "Who currently holds which shared external resource, how long each has left, and which are yours. Call it before starting work that touches something outside this machine, and when an action comes back as a lease_conflict.",
+  {},
+  async () => {
+    const g = await gate("lease_list", {});
+    if (g.gated) return g.response;
+    const all = leases.list();
+    record("lease_list", {}, g.cls, `${all.length} held`);
+    return text({ holder: leases.holderId(), leases: all });
   }
 );
 
