@@ -1,0 +1,50 @@
+[
+  {
+    "harness": "grok",
+    "bench": "A-files",
+    "runs": 1,
+    "successes": 1,
+    "turns_median": 2,
+    "turns_range": "2–2",
+    "tokens_median": 37834,
+    "cost_usd_median": 0.049,
+    "wall_s_median": 39,
+    "wall_s_range": "39–39"
+  },
+  {
+    "harness": "grok",
+    "bench": "B-tagline",
+    "runs": 1,
+    "successes": 1,
+    "turns_median": 8,
+    "turns_range": "8–8",
+    "tokens_median": 153913,
+    "cost_usd_median": 0.14,
+    "wall_s_median": 50.7,
+    "wall_s_range": "50.7–50.7"
+  },
+  {
+    "harness": "claude",
+    "bench": "A-files",
+    "runs": 1,
+    "successes": 1,
+    "turns_median": 2,
+    "turns_range": "2–2",
+    "tokens_median": 67506,
+    "cost_usd_median": 0.166,
+    "wall_s_median": 17.5,
+    "wall_s_range": "17.5–17.5"
+  },
+  {
+    "harness": "claude",
+    "bench": "B-tagline",
+    "runs": 1,
+    "successes": 1,
+    "turns_median": 5,
+    "turns_range": "5–5",
+    "tokens_median": 170050,
+    "cost_usd_median": 0.236,
+    "wall_s_median": 31.5,
+    "wall_s_range": "31.5–31.5"
+  }
+]

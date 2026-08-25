@@ -166,6 +166,55 @@ deepseek costs a premium, and against a harness that walks the sequential path
 efficiently, that premium is visible. Compared with our own `seq` (17 478) the
 two are level — dsh simply takes more turns to spend the same tokens.
 
+### And against two whole products
+
+Grok Build and Claude Code run the same two tasks, scored the same way, with
+their turns, tokens and cost taken from **their own JSON reports**. Both are
+subscription products, so the cost is the vendor's list price for the tokens
+rather than an invoice — it is reported because it is the only cost figure
+either offers.
+
+**Task A — six files**
+
+| Stack | Turns | Tokens | Cost | Wall |
+|---|---|---|---|---|
+| Nefertari `plan` · deepseek-v4-flash | 2 | **6 468** | **~$0.001** | **5.9s** |
+| dsh · deepseek-v4-flash | 2 | 10 545 | — | 14.9s |
+| Grok Build · grok-4.6 | 2 | 37 834 | $0.049 | 39s |
+| Claude Code | 2 | 67 506 | $0.166 | 17.5s |
+
+**Task B — tagline race**
+
+| Stack | Turns | Tokens | Cost | Wall |
+|---|---|---|---|---|
+| Nefertari `traj` · kat-coder-air | **4** | **15 831** | — | **16.3s** |
+| Nefertari `traj` · deepseek-v4-flash | 6 | 24 748 | ~$0.005 | 19.3s |
+| Claude Code | 5 | **170 050** | $0.236 | 31.5s |
+| Grok Build · grok-4.6 | 8 | 153 913 | $0.140 | 50.7s |
+| dsh · deepseek-v4-flash | 11 | 16 939 | — | 33s |
+
+**Read the cost column, not the token column.** Token totals include cache
+reads, which are priced at a fraction of fresh input, so the raw counts overstate
+the gap. Cost is what accounts for that, and it is where the difference is real:
+task A costs about a tenth of a cent on a cheap model under a thin layer, and
+sixteen cents under a frontier model in a full harness.
+
+**And read it as four STACKS, not four harnesses.** They run different models —
+deepseek-v4-flash for Nefertari and dsh, grok-4.6 for Grok Build, Anthropic's own
+for Claude Code — because that is how each actually ships. Most of the cost gap
+is the model, not the layer. What the layer contributes is visible in the turn
+column instead, where the same task takes 4 turns with a parallel primitive and
+11 without one.
+
+**Claude Code is the strongest of the three products here**, and saying so costs
+nothing: 5 turns on task B against dsh's 11, close to the parallel primitive's 6,
+and the fastest wall-clock of the three on task A. The difference is not
+competence, it is what a task costs.
+
+**N=1 for Grok Build and Claude Code**, against 5 for the Nefertari cells and 3
+for dsh. Their numbers are a first reading, not a median, and the Atlas balance
+ran out before the matrix could be re-run to match.
+
 ### What this comparison is, and is not
 
 It measures **two stacks end to end on one task**, not two implementations of the

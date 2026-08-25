@@ -1,0 +1,42 @@
+[
+  {
+    "harness": "grok",
+    "bench": "A-files",
+    "run": 1,
+    "success": true,
+    "wallS": 39,
+    "turns": 2,
+    "totalTok": 37834,
+    "costUsd": 0.049076
+  },
+  {
+    "harness": "grok",
+    "bench": "B-tagline",
+    "run": 1,
+    "success": true,
+    "wallS": 50.7,
+    "turns": 8,
+    "totalTok": 153913,
+    "costUsd": 0.140162
+  },
+  {
+    "harness": "claude",
+    "bench": "A-files",
+    "run": 1,
+    "success": true,
+    "wallS": 17.5,
+    "turns": 2,
+    "totalTok": 67506,
+    "costUsd": 0.1661585
+  },
+  {
+    "harness": "claude",
+    "bench": "B-tagline",
+    "run": 1,
+    "success": true,
+    "wallS": 31.5,
+    "turns": 5,
+    "totalTok": 170050,
+    "costUsd": 0.23632400000000003
+  }
+]
