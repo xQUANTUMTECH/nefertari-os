@@ -3,10 +3,14 @@
 What three execution primitives are worth, measured on cheap models, with the
 verdict read from the filesystem rather than from the model's account of itself.
 
-> **Measured 24 August 2026.** Bench A and B at `2aa1851`, the idle share at `3b97927`, the dsh
-> comparison at `1f2d250`. Speculative pre-checkpointing (`c1ad1c6`) and the agent confinement
-> (`74f87af`, `06bd842`) landed afterwards and have **not** been re-measured end to end — a benchmark
-> that does not name its build stops meaning anything the moment the build moves.
+> **Model benchmarks measured 24 August 2026.** Bench A and B at `2aa1851`, the idle share at
+> `3b97927`, the dsh comparison at `1f2d250`. Speculative pre-checkpointing (`c1ad1c6`) and the
+> agent confinement (`74f87af`, `06bd842`) landed afterwards and have **not** been re-measured end
+> to end — a benchmark that does not name its build stops meaning anything the moment the build
+> moves.
+>
+> **Gate-freeze measured 25 August 2026** at `8ebf136`, on Linux with cgroup v2 delegated. It is a
+> machine measurement, not a model one: no API is called, so no model or provider appears in it.
 >
 > Raw data: [`packages/agentd/examples/bench-results.json`](../packages/agentd/examples/bench-results.json) ·
 > per-cell medians: `bench-summary.json` · harness:
@@ -131,6 +135,39 @@ at checkpoint time. A speculative optimisation must never be able to produce a
 wrong answer, only a useless one.
 
 ---
+## A goal waiting for a human
+
+An irreversible action stops at the gate until a person approves it. What that
+wait costs the machine, measured with a process that spins inside the agent's
+tree:
+
+| | CPU burned | Over |
+|---|---|---|
+| Gate open (agent free to run) | **404 ms** | 400 ms |
+| Gate holding (tree frozen) | **2 ms** | 407 ms |
+
+**196× less**, and the resume is a thaw rather than a restart: memory is
+untouched, so nothing is re-read, re-planned or re-explained.
+
+The measurement deliberately does not use the agent itself. An agent waiting on
+a tool reply is already blocked on a read and already near zero, so measuring it
+would produce a flattering number that proves nothing about the mechanism. What
+the freeze adds is the rest of the tree — a build it started, a subagent
+mid-flight, a harness that polls while a call is outstanding — which is why the
+thing being measured is a child that spins.
+
+The other half of the cost is not CPU at all. Answering *come back later* leaves
+the agent to reason about being blocked, poll for the answer, and re-derive the
+situation after a compaction — turns that are billed. Holding the reply removes
+them, and that saving is real but not measured here: it depends on the harness,
+and a number that varies by client is not a benchmark.
+
+Opt-in (`NEFERTARI_GATE_WAIT_MS`), because holding a tool reply changes what an
+agent observes and a client with its own timeout would see a hang rather than a
+gate.
+
+---
+
 
 ## Against DeepSeek Harness
 
@@ -247,6 +284,14 @@ figures.** Raw data: [`bench-dsh-results.json`](../packages/agentd/examples/benc
   seconds. The direction is clear and the magnitudes are indicative.
 - **Two of three models, for Bench A.** Doubao's `plan` cell has one successful
   run, so its median is a single number rather than a median.
+- **196× is a ratio between a spinning child and a frozen one**, not a claim
+  about a typical agent. An agent with nothing running underneath it is
+  already near zero at the gate; the freeze is what makes zero a property of
+  the machine instead of a hope about the harness. The 2 ms is the tail of the
+  freeze taking effect, not a leak.
+- **The token saving from not answering "come back later" is not measured.**
+  It is real and it depends entirely on the harness, and a number that changes
+  with the client is not a benchmark.
 
 ## Reproducing
 
@@ -258,3 +303,18 @@ ATLASCLOUD_API_KEY=... BENCH_RUNS=5 bash packages/agentd/examples/run-bench-matr
 The runner drives the benchmark inside the container, so the enforcer is active
 as it is in a real run. Raw results and per-cell medians are written next to
 each other; every claim above is recomputable from the raw file.
+
+
+The cgroup numbers above (freeze, gate-freeze, background priority) need a
+writable `/sys/fs/cgroup`, which an ordinary container does not have — there the
+tests skip with the reason rather than failing. To actually run them:
+
+```sh
+docker run --rm --privileged --cgroupns=private --user root \
+  -v "$PWD:/repo" -w /repo/packages/agentd --entrypoint /bin/sh \
+  nefertari-agentd:enforce-test \
+  -c 'mount -o remount,rw /sys/fs/cgroup; bash test/run-all.sh'
+```
+
+Worth knowing, because it hid a real bug for a while: the ordinary run reports
+`ALL TESTS PASSED` with the freeze never exercised.
