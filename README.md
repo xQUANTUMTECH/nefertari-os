@@ -58,6 +58,16 @@ The same `agentd` runs unmodified on:
 
 Unknown = irreversible. The safe default is not "trust the AI", it's "prove reversibility or ask".
 
+**The line between autonomous and permitted is currently fixed**, and worth
+naming as such: `reversible` and `noisy` pass, `irreversible` waits for a
+human. That is a sound default and an incomplete contract, because the right
+line depends on where the agent is running rather than on what the command
+does. The same `git push` is obvious in a throwaway sandbox and worth asking
+about in production. Declared autonomy profiles, autonomy *budgets* ("three
+irreversible actions, then stop") and expiring per-goal delegations are on the
+roadmap — with the constraint that a profile may make an action autonomous and
+must never make it unrecorded.
+
 ### What the broker specifically catches
 
 The shell classifier is defense-in-depth: a global danger scan over the raw
@@ -463,13 +473,20 @@ no secret ever touches a command line).
 - **Phase 2a** (done) — time & intent: ✅ timeline checkpoint/fork/restore/promote,
   ✅ `plan_run`, ✅ `trajectories_run`. Parallel: ✅ Landlock enforce, ✅ Windows
   companion approve toasts.
-- **Phase 2b–e** (next) — **body + fusion + affordable autonomy** (see VISION):
+- **Phase 2b** (done) — the machine underneath: ✅ agent confinement (Landlock,
+  reads and writes), ✅ signed hash-chained journal, ✅ idempotence by action hash,
+  ✅ gate-freeze (a goal waiting for a human costs 0 CPU), ✅ `wait_for` (waiting
+  costs 0 turns), ✅ speculation in a child under `cpu.idle`. 25 test files green,
+  on Linux with cgroup v2 delegated and degrading with a reason everywhere else.
+- **Phase 2c–e** (next) — **body + fusion + affordable autonomy** (see VISION):
   - body contract with Ania (no dual-path host mutation)
   - live world-model + typed state + `assert_outcome` (T4–T6)
   - **self-wake bus** (timer/event/gate/dependency) + skinny resume packets (T7)
   - **proportional host tiers** T0–T4 + progressive disclosure (T8)
   - `preflight` for embodied/robotic agents
   - companion UI Automation eyes/hands; NixOS-WSL; CoW backends
+  - **a declared line between autonomous and permitted**: autonomy profiles,
+    budgets rather than per-action prompts, expiring per-goal delegations
 - **Phase 3**: desktop control (AT-SPI / UIA / AXUIElement), local model routing, voice,
   agent-as-systemd-citizen install profile.
 

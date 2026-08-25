@@ -340,13 +340,13 @@ init proprio (systemd resta).
 - [x] **`inferd.mjs`**: supervisione dell'inferenza locale — `c343e10`. Congelata: **0 µs su 700 ms**
 - [x] **`speculate.mjs`**: il checkpoint fatto nella finestra di idle — `c1ad1c6`.
       **103 ms a freddo → 9 ms preparato**, e sette test su otto sono di correttezza
-- [x] **Firma Ed25519 per entry** — §4.4. La catena rende la manomissione *visibile*; la firma
+- [x] **Firma Ed25519 per entry** — `44a8b57`, §4.4. La catena rende la manomissione *visibile*; la firma
       impedisce di riscrivere il registro da capo. Un falsario può ricalcolare ogni hash, non può
       firmare, e una entry non firmata dopo una firmata viene rifiutata. Resta aperta la troncatura:
       nessuna firma può protestare per la propria assenza, serve un àncora esterna
-- [x] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** — la copia speculativa non gira più
-      dentro il demone. *Numero: copiare 128MB in-process blocca l'event loop per **264 ms**, nel
-      figlio per **0 ms**.* Il difetto non era teorico: `copyFileSync` non cede, e il demone è ciò
+- [x] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** — `9634bd7`. La copia speculativa non
+      gira più dentro il demone. *Numero: copiare 128MB in-process blocca l'event loop per **264 ms**,
+      nel figlio per **0 ms**.* Il difetto non era teorico: `copyFileSync` non cede, e il demone è ciò
       che ogni tool call attraversa — una speculazione che può bloccare una chiamata vera è peggio
       di nessuna speculazione, perché il costo cade proprio sul percorso che doveva accelerare.
       In un figlio diventano possibili due cose che prima no: `cpu.idle` (gira solo quando la CPU
@@ -358,8 +358,8 @@ init proprio (systemd resta).
       ogni misura tornava uno 0 ms convinto. Un metro che legge zero su un blocco noto di 300 ms
       non fallisce: ti dà ragione. Ora il metro viene verificato contro un blocco noto prima di
       essere usato
-- [x] **`wait_for(condizione)`** — svegliarsi su evento, non su orario. Il demone guarda al posto
-      dell'agente e la chiamata non torna finché la condizione non regge. *Numero: una attesa
+- [x] **`wait_for(condizione)`** — `db8d187`. Svegliarsi su evento, non su orario: il demone guarda
+      al posto dell'agente e la chiamata non torna finché la condizione non regge. *Numero: una attesa
       coperta da **1 sola tool call**, 7 poll fatti dal demone che l'agente non ha mai visto —
       da N turni di polling a ZERO.* Condizioni: `path_exists`, `path_gone`, `path_changed`,
       `file_contains`, `command_succeeds` (solo read-only: una condizione viene valutata a ogni
@@ -368,7 +368,7 @@ init proprio (systemd resta).
       produce la condizione è spesso un figlio dell'agente (`npm test &`), e congelarlo è un
       deadlock travestito da timeout. Si congela solo se nell'albero non c'è nient'altro che
       l'agente; il test costruisce apposta il deadlock per dimostrare che la regola serve
-- [x] **H4 gate-freeze** — §4.4/H4. L'azione parcheggiata al gate non restituisce più *"torna
+- [x] **H4 gate-freeze** — `8ebf136`, §4.4/H4. L'azione parcheggiata al gate non restituisce più *"torna
       dopo"*: il demone trattiene la risposta e **congela l'albero dell'agente**, poi la scongela
       e la esegue quando l'umano approva. *Numero:* con il gate aperto un figlio che gira brucia
       **404 ms di CPU ogni 400 ms**, mentre il gate trattiene **2 ms — 196× meno**. Opt-in
@@ -377,7 +377,7 @@ init proprio (systemd resta).
       cui root contiene processi (ogni container) la scrittura viene *accettata* e da lì in poi
       nessun figlio accetta più un processo (EIO). Il freeze smetteva di funzionare e la causa
       era tre chiamate a monte del sintomo. Un knob di priorità non può rompere una garanzia
-- [x] **Idempotenza per hash d'azione** — §4.3. Un'azione identica a quella immediatamente
+- [x] **Idempotenza per hash d'azione** — `f827fef`, §4.3. Un'azione identica a quella immediatamente
       precedente, **senza niente in mezzo**, non viene rieseguita: torna il risultato originale,
       etichettato. Il discriminante è *cosa è successo in mezzo*, non il tempo, altrimenti il loop
       edit → test → edit → stesso test si romperebbe. Due bug veri trovati dai test: `fs_write` è
@@ -386,6 +386,33 @@ init proprio (systemd resta).
       spariva
 
 ### Prossime, ordinate
+- [ ] **Definire la LINEA fra azione autonoma e azione che chiede permesso** *(1–2 settimane)* —
+      oggi la linea esiste ma è **fissa e implicita**: `reversible`/`noisy` passano, `irreversible`
+      va al gate. È un default ragionevole e un cattivo contratto, perché la linea giusta dipende
+      da *dove* gira l'agente, non da cosa fa il singolo comando. Le tre cose che mancano:
+
+      **(a) Profili di autonomia dichiarati.** Lo stesso `git push` è ovvio in una sandbox usa-e-getta
+      e da chiedere in produzione. Servono profili nominati (`supervised`, `trusted`, `autonomous`,
+      `paranoid`) che spostano la soglia, non la tassonomia: la classificazione resta un fatto sul
+      comando, il profilo è una decisione sul contesto. Tenerli separati è ciò che impedisce alla
+      pressione ("fammelo passare") di corrompere il classificatore.
+
+      **(b) Budget di autonomia, non solo permessi per azione.** "Può spendere fino a X", "può
+      toccare fino a N file fuori dal workspace", "può fare 3 azioni irreversibili poi si ferma".
+      Un permesso per-azione non scala su una notte di lavoro autonomo: o chiede troppo (e l'umano
+      timbra senza leggere — è la stessa approval fatigue per cui esiste già `MAX_PENDING`) o non
+      chiede mai. Un budget si esaurisce, ed esaurirsi è un comportamento sicuro.
+
+      **(c) Deleghe con scadenza, per goal.** "Per QUESTO goal, per le prossime 2 ore, i push su
+      questo repo sono autonomi" — una capability con scope e scadenza, non un flag globale. Si
+      appoggia su `actionHash` (che già identifica un'azione) e sul lease manager di §4.5 (che già
+      deve nominare le risorse esterne per URI).
+
+      Vincoli che la linea deve rispettare, e sono il motivo per cui è una voce di design e non una
+      config: il default deve restare *chiedi*, l'allentamento deve essere **esplicito, nominato e
+      journalizzato** (chi ha allargato la linea, quando, per quale goal), e nessun profilo deve
+      poter rendere invisibile un'azione — al massimo può renderla *autonoma*, mai *non registrata*.
+      Il journal firmato di §4.4 è ciò che rende questa distinzione verificabile invece che promessa.
 - [ ] **Lease manager su URI esterni** *(1–2 settimane)* — §4.5
 - [ ] **Scheduler a budget token** *(2 settimane)* — §4.2
 - [ ] **H2 fork overlayfs + upper tmpfs** *(2–3 settimane)* — sblocca anche gli errori con write-set
