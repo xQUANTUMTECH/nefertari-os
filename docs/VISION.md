@@ -288,5 +288,4 @@ When over budget: OS returns structured `budget_exceeded` → brain must summari
 | [PROPORTIONALITY.md](./PROPORTIONALITY.md) | context economy & tiers (detail) |
 | [NEURAL-LAYER-NEXUSDB.md](./NEURAL-LAYER-NEXUSDB.md) | Hebbian tissue, wiring Ania/Nefertari |
 | Ania plan | `agent-engine-template-sdk/PLAN-ANIA-GROK-ORCHESTRATOR.md` |
-| Fortuna strategy | `FORTUNA CRM/docs/MODELLO-PROPRIETARIO-STRATEGY.md` |
-| NexusDB engine | `dev/nexusdb-rust` |
+| NexusDB engine | [xQUANTUMTECH/nexusdb](https://github.com/xQUANTUMTECH/nexusdb) |

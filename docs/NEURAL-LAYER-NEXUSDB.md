@@ -1,7 +1,7 @@
 # Neural layer — NexusDB as the missing tissue
 
 > Companion to [VISION.md](./VISION.md) and [PROPORTIONALITY.md](./PROPORTIONALITY.md).  
-> Code: `dev/nexusdb-rust` (engine + Hebbian) · strategy: `FORTUNA CRM/docs/MODELLO-PROPRIETARIO-STRATEGY.md`.
+> Engine: [NexusDB](https://github.com/xQUANTUMTECH/nexusdb) — Rust, cartridges + Hebbian layer.
 
 ---
 
@@ -113,9 +113,9 @@ Neither replaces the other.
 
 ---
 
-## 5. Three roles of NexusDB (already in Fortuna strategy)
+## 5. Three roles of NexusDB
 
-From `MODELLO-PROPRIETARIO-STRATEGY.md`, made concrete:
+The three places a retrieval engine earns its keep in an agent stack, made concrete:
 
 ### Role A — Runtime plastic memory (Ania `LongTermMemory`)
 
