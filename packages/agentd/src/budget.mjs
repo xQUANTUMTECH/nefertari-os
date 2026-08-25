@@ -65,6 +65,7 @@ const LIMITS = {
 const WIND_DOWN = new Set([
   "budget_status",
   "journal_tail",
+  "journal_query",
   "journal_verify",
   "pending_list",
   "lease_list",

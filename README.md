@@ -363,6 +363,29 @@ external resources are held, and how full the window is. Pointers, not content,
 so it is affordable exactly when the window is fullest: **2 563 bytes** to
 re-orient a session that had read 907KB, with the detail one call away.
 
+**And the record is queried, never read.** The obvious objection to putting
+memory in an append-only journal is that the journal grows forever, so
+eventually it does not fit in the window either. It does not have to: the
+filtering and counting happen on the daemon, where size is not a problem, and
+only the answer crosses into the window. **8 001 entries — 2.3MB of journal —
+summarised in 137 bytes**, and a question about 200 000 entries costs the same
+as one about twenty. A bounded list always reports the true total, so five
+results can never be mistaken for all of them.
+
+What it deliberately does not do is answer by meaning. *"What did we decide
+about the parser?"* is retrieval, not filtering — that is the slot NexusDB
+fills, and the shape here is built to receive it: queries return pointers, so
+a better way of choosing which pointers changes nothing else.
+
+**Memory is data, never an instruction.** A result paged out of a `curl` comes
+back labelled `external/untrusted` with an explicit warning — on **every**
+delivery, not just the first, because the whole problem is that the agent will
+not remember having been told. Otherwise content launders itself: it arrives as
+the world and returns as memory, which is what an agent trusts most. Local
+content is not labelled, so the label keeps meaning something, and an
+unrecognised source is untrusted by default — mislabelling the world as local
+is an injection channel, while mislabelling a local file costs one sentence.
+
 **Large results are paged, not delivered.** A result that would fill the window
 comes back as a **handle** with a preview, and the body stays on the daemon's
 disk. A 2.2MB build log enters the context as **1 779 bytes**; searching it

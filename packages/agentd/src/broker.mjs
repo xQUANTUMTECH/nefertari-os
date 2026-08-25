@@ -211,6 +211,7 @@ export function classify(tool, args) {
     case "context_fetch":
     case "context_list":
     case "recall":
+    case "journal_query":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
       return isSensitivePath(args.path)

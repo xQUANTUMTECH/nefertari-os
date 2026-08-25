@@ -57,12 +57,15 @@ const server = new McpServer({ name: "nefertari-agentd", version: "0.1.0" });
 // Every byte that reaches the agent leaves through here, which is why the
 // meter lives here too: a result is not charged for what it was meant to be,
 // it is charged for what actually went out.
-function text(s, tool) {
+function text(s, tool, args) {
   // Paged BEFORE it is serialised and before it is charged for. A result
   // that would fill the window is replaced by a handle here, so the meter
   // below records what actually reached the agent — and so nothing that
   // large enters the conversation in the first place. See context.mjs.
-  const paged = tool ? vctx.page(s, { tool }) : s;
+  //
+  // `args` travels with it because whether content can be trusted depends on
+  // what produced it, and only the caller knows the command that ran.
+  const paged = tool ? vctx.page(s, { tool, args }) : s;
   const body = typeof paged === "string" ? paged : JSON.stringify(paged, null, 2);
   if (tool) budget.charge(tool, Buffer.byteLength(body));
   return { content: [{ type: "text", text: body }] };
@@ -270,7 +273,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = await ops.opShell({ command, cwd }, g.cls);
     record("shell", { command, cwd }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, { notify: g.cls === CLASS.NOISY, ...r.meta });
-    return text(r.output, "shell");
+    return text(r.output, "shell", { command, cwd });
   }
 );
 
@@ -675,6 +678,28 @@ server.tool(
       `${r.journal.entries} entries, ${r.held_in_store.length} held, ${r.pending_approvals.length} pending`
     );
     return text(r, "recall");
+  }
+);
+
+server.tool(
+  "journal_query",
+  "Ask the record a question instead of reading it. The journal is append-only and grows forever, so it is never delivered — the filtering and counting happen on the daemon, and what crosses into your window is the answer. A question about 200 000 entries costs the same as one about twenty. Filter by time, tool, decision or a pattern; set count:true to get totals by tool and decision instead of a list, which is how a broad question stays affordable. The total number of matches is always reported, so a bounded list can never be mistaken for the whole of it.",
+  {
+    since: z.string().optional().describe("ISO timestamp: ignore anything older"),
+    until: z.string().optional().describe("ISO timestamp: ignore anything newer"),
+    tool: z.string().optional().describe("Only this tool, e.g. shell, fs_write"),
+    decision: z.string().optional().describe("Only this decision, e.g. pending_approval, duplicate_suppressed, lease_conflict"),
+    contains: z.string().optional().describe("Regular expression matched against the whole entry"),
+    count: z.boolean().optional().describe("Totals by tool and decision instead of a list — use for broad questions"),
+    limit: z.number().int().min(1).max(100).optional().describe("How many entries to return (default 20)"),
+  },
+  async ({ since, until, tool: t, decision, contains, count, limit }) => {
+    const args = { since, until, tool: t, decision, contains, count, limit };
+    const g = await gate("journal_query", args);
+    if (g.gated) return g.response;
+    const r = journal.query(args);
+    record("journal_query", args, g.cls, r.error ? `refused: ${r.error}` : `${r.matched} matched of ${r.scanned} scanned`);
+    return text(r, "journal_query");
   }
 );
 

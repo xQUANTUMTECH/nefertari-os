@@ -63,6 +63,7 @@ const READ_ONLY = new Set([
   "context_fetch",
   "context_list",
   "recall",
+  "journal_query",
 ]);
 
 // `shell` is the exception the set cannot express: whether it changed anything

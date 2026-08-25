@@ -199,6 +199,116 @@ export function readAll(max = 20000) {
 }
 
 /**
+ * Ask the record a question. Never read it.
+ *
+ * This is the answer to the obvious objection: if memory lives in an
+ * append-only journal, and the journal grows forever, then the memory
+ * eventually cannot fit in the window either — the record blows the context
+ * it was supposed to protect.
+ *
+ * It does not, because the record is never DELIVERED. The filtering and the
+ * counting happen here, on the daemon side, where a hundred megabytes is
+ * nothing; what crosses into the window is the answer. A question about
+ * 200 000 entries comes back as twenty numbers and a dozen pointers, and it
+ * costs the same as a question about twenty.
+ *
+ * `count` is the part that makes it scale rather than merely defer. Listing
+ * matches is bounded by `limit`, so a broad question would be answered by an
+ * arbitrary slice — which is worse than no answer, because it looks like one.
+ * Aggregating turns any number of entries into a fixed-size shape, and the
+ * total is always reported so a bounded listing can never be mistaken for the
+ * whole of it.
+ *
+ * What this deliberately does NOT do is answer by meaning. "What did we decide
+ * about the parser?" needs retrieval, not filters. That is the slot NexusDB
+ * fills, and the shape here is built for it: a query returns pointers, so a
+ * better way of choosing WHICH pointers changes nothing else.
+ */
+export function query({
+  since,
+  until,
+  tool,
+  decision,
+  contains,
+  limit = 20,
+  count = false,
+  scan = 200000,
+} = {}) {
+  if (!fs.existsSync(JOURNAL_FILE)) return { matched: 0, scanned: 0, entries: [] };
+  const raw = fs.readFileSync(JOURNAL_FILE, "utf8").trim();
+  if (!raw) return { matched: 0, scanned: 0, entries: [] };
+
+  // Newest first, and bounded: a journal larger than `scan` is answered from
+  // its recent end rather than not at all, and says so.
+  const all = raw.split("\n");
+  const lines = all.length > scan ? all.slice(-scan) : all;
+
+  let re = null;
+  if (contains) {
+    try {
+      re = new RegExp(contains, "i");
+    } catch (e) {
+      return { error: `contains is not a valid regular expression: ${e.message}` };
+    }
+  }
+  const from = since ? Date.parse(since) : null;
+  const to = until ? Date.parse(until) : null;
+
+  const hits = [];
+  const byTool = {};
+  const byDecision = {};
+  let matched = 0;
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    // Cheap rejection before parsing: on a large journal the JSON.parse is
+    // the whole cost, and most lines are not going to match anything.
+    if (tool && !line.includes(`"tool":"${tool}"`)) continue;
+    if (decision && !line.includes(`"decision":"${decision}"`)) continue;
+    if (re && !re.test(line)) continue;
+
+    let e;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const t = Date.parse(e.ts);
+    if (from && t < from) break; // entries are in order: nothing older will match
+    if (to && t > to) continue;
+
+    matched++;
+    byTool[e.tool || "?"] = (byTool[e.tool || "?"] || 0) + 1;
+    byDecision[e.decision || "?"] = (byDecision[e.decision || "?"] || 0) + 1;
+    if (!count && hits.length < limit) {
+      hits.push({
+        ts: e.ts,
+        tool: e.tool,
+        decision: e.decision,
+        outcome: e.outcome,
+        reason: e.reason,
+        // A pointer, not the entry: whoever wants the whole thing knows where
+        // it is, and most callers only need to know that it happened.
+        args: e.args,
+        hash: e.hash,
+      });
+    }
+  }
+
+  return {
+    matched,
+    scanned: lines.length,
+    truncated_scan: all.length > scan ? `answered from the most recent ${scan} of ${all.length} entries` : undefined,
+    by_tool: byTool,
+    by_decision: byDecision,
+    // Always present, always the TOTAL, so a bounded list cannot read as the
+    // complete set — the mistake that turns a partial answer into a wrong one.
+    returned: hits.length,
+    entries: count ? undefined : hits,
+  };
+}
+
+/**
  * Walk the chain and report where, if anywhere, it parts.
  *
  * Returns { ok, entries, checked, broken } — `broken` naming the 1-based line,

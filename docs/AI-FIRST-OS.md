@@ -376,6 +376,21 @@ init proprio (systemd resta).
       spiegarsi e restituire resta permesso.
       Resta aperta la **prelazione fra goal** di §4.2: qui c'è il contatore e il limite, non ancora
       lo scheduler che toglie quota a un goal per darla a un altro
+- [x] **`journal_query`: il registro si interroga, non si legge** — la risposta all'obiezione del
+      registro che sfonda il contesto. Filtro e conteggio dal lato demone, nella finestra passa solo
+      la risposta. *Numero: 8.001 entry (2,3 MB) riassunte in **137 byte**; 5 restituite su 4.000
+      trovate, con la differenza dichiarata.* Il retrieval semantico resta lo slot NexusDB
+- [x] **Etichetta di fiducia sulla provenienza** — la memoria è **dato, mai istruzione**. Un handle
+      che viene da `curl` porta l'etichetta *external/untrusted* e un avviso esplicito **a ogni
+      consegna**, non solo alla prima: tutto il problema è che l'agente non si ricorderà di essere
+      stato avvisato. Il contenuto locale non viene etichettato, così l'etichetta continua a
+      significare qualcosa. Default conservativo — una fonte non riconosciuta è *untrusted*, perché
+      i due errori non sono simmetrici: scambiare il mondo per locale è un canale di injection,
+      scambiare un file locale per esterno costa una frase
+- [x] **Eviction dello store con lapide** — TTL + tetto, e un handle scaduto risponde *"c'era, è
+      stato evitto il giorno X, ecco come riprenderlo"* con il comando esatto. Un handle che sparisce
+      e basta dà all'agente un errore che non sa interpretare: non distingue *"non è mai esistito"*
+      da *"c'era e non c'è più"*, quindi ri-deriva il mondo o decide di essersela immaginata
 - [x] **Contesto virtuale: handle + fault-in** — §3. Un risultato che riempirebbe la finestra torna
       come **handle** con anteprima, e il corpo resta sul disco del demone. *Numero: un log di
       2,2MB entra nella finestra come **1.779 byte**; cercarci dentro costa **391 byte** su dati che
@@ -491,6 +506,36 @@ la finestra è più piena. *Numero: 2.563 byte per riorientare una sessione che 
    **l'eviction registrata**: un handle mancante deve spiegarsi da solo invece di dare un 404
    misterioso a un agente che non può sapere perché.
 
+### E il registro che sfonda il contesto?
+
+È l'obiezione giusta, ed è quella che rompe quasi tutti i disegni di memoria per agenti. Se la
+memoria vive in un journal append-only, e il journal cresce per sempre, prima o poi **la memoria
+non ci sta più nella finestra che doveva proteggere**. Averla spostata dal contesto al disco non
+risolve niente se poi il disco lo devi rileggere.
+
+Non ci sta perché **il registro non viene mai consegnato**. Si interroga.
+
+Il filtro e il conteggio girano dal lato del demone, dove cento megabyte non sono un problema; nella
+finestra passa **la risposta**, mai il corpus. Una domanda su 200.000 entry costa quanto una domanda
+su venti. *Numero: 8.001 entry, 2,3 MB di journal, riassunte in **137 byte**.*
+
+Tre proprietà, e servono tutte e tre:
+
+1. **Aggregare, non elencare.** `count: true` trasforma qualunque numero di entry in una forma di
+   dimensione fissa (totali per tool e per decisione). Elencare è limitato da `limit`, quindi una
+   domanda larga verrebbe risposta con una fetta arbitraria — che è peggio di nessuna risposta,
+   perché sembra una risposta.
+2. **Il totale è sempre dichiarato.** `returned: 5, matched: 4000`. Una lista limitata non deve mai
+   poter essere scambiata per l'insieme completo: è l'errore che trasforma una risposta parziale in
+   una risposta sbagliata.
+3. **Puntatori, non contenuto.** La risposta nomina; chi vuole il corpo lo chiede.
+
+**Quello che questo NON fa è rispondere per significato.** *"Cosa abbiamo deciso sul parser?"* non è
+un filtro, è retrieval. È esattamente lo slot di **NexusDB** — e la forma qui è costruita per
+riceverlo: una query restituisce puntatori, quindi cambiare il modo di scegliere *quali* puntatori
+non cambia nient'altro. Il livello 4 (sapere durevole fra run) e il retrieval semantico sul livello
+1 sono lo stesso pezzo, ed è il pezzo che Nefertari lascia apposta aperto.
+
 ### Il pager è il modello locale
 
 Confine di egress e pager del contesto sono **lo stesso confine** (§3). La cosa che può leggere 10MB
@@ -499,10 +544,6 @@ il pager è meccanico — soglia, handle, `grep` — e funziona; il passo succes
 modello locale, che è l'unico modo di riassumere senza spedire.
 
 ### Prossime, ordinate
-- [ ] **Etichetta di fiducia sulla provenienza** *(giorni)* — un handle che viene dal web non è come
-      uno che viene dal filesystem locale. La memoria è **dato, mai istruzione**, e va marcata
-- [ ] **Eviction dello store con lapide** *(giorni)* — TTL + tetto, e un handle scaduto deve
-      rispondere *"c'era, è stato evitto il giorno X, ecco da dove riprenderlo"* invece di sparire
 - [ ] **Il modello locale come pager** *(1–2 settimane)* — oggi la paginazione è meccanica (soglia +
       `grep`). Far scegliere al modello locale quali 2KB contano è §3, ed è l'unico modo di
       riassumere senza spedire
