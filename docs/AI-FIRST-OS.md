@@ -344,6 +344,15 @@ init proprio (systemd resta).
       impedisce di riscrivere il registro da capo. Un falsario può ricalcolare ogni hash, non può
       firmare, e una entry non firmata dopo una firmata viene rifiutata. Resta aperta la troncatura:
       nessuna firma può protestare per la propria assenza, serve un àncora esterna
+- [x] **H4 gate-freeze** — §4.4/H4. L'azione parcheggiata al gate non restituisce più *"torna
+      dopo"*: il demone trattiene la risposta e **congela l'albero dell'agente**, poi la scongela
+      e la esegue quando l'umano approva. *Numero:* con il gate aperto un figlio che gira brucia
+      **404 ms di CPU ogni 400 ms**, mentre il gate trattiene **2 ms — 196× meno**. Opt-in
+      (`NEFERTARI_GATE_WAIT_MS`), perché trattenere una risposta cambia ciò che l'agente osserva.
+      **Bug vero trovato qui:** `enableCpu()` scriveva `+cpu` nella root, e su qualunque host la
+      cui root contiene processi (ogni container) la scrittura viene *accettata* e da lì in poi
+      nessun figlio accetta più un processo (EIO). Il freeze smetteva di funzionare e la causa
+      era tre chiamate a monte del sintomo. Un knob di priorità non può rompere una garanzia
 - [x] **Idempotenza per hash d'azione** — §4.3. Un'azione identica a quella immediatamente
       precedente, **senza niente in mezzo**, non viene rieseguita: torna il risultato originale,
       etichettato. Il discriminante è *cosa è successo in mezzo*, non il tempo, altrimenti il loop
@@ -353,8 +362,6 @@ init proprio (systemd resta).
       spariva
 
 ### Prossime, ordinate
-- [ ] **H4 gate-freeze** via `cgroup.freeze` *(giorni ormai)* — il meccanismo è già verificato in
-      `cgroups.mjs`, manca solo agganciarlo al gate
 - [ ] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** invece che in-process *(giorni)* —
       la macchina c'è, deve solo guadagnarselo
 - [ ] **`wait_for(condizione)`** *(1–2 settimane)* — svegliarsi su evento, non su orario. Unifica

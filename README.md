@@ -322,6 +322,23 @@ deleted. Replayed, it is the answer a resuming session actually needs — not
 than the last action recorded against it was changed by someone else, and that
 is where a stale assumption is about to cost a wrong edit.
 
+**A goal waiting for a human costs nothing.** An irreversible action stops at
+the gate. Instead of handing the agent a *come back later* — which it answers
+by reasoning about being blocked, polling, and re-explaining itself after a
+compaction, all of it tokens — the daemon holds the reply and **freezes the
+agent's process tree**: zero CPU, memory untouched, resumed in milliseconds
+when the human approves. The call then returns the executed result, so from
+the agent's side a tool call simply took a while.
+
+Waiting on a reply already costs an idle agent almost nothing; what the freeze
+adds is everything else in the tree — the build it started, a subagent
+mid-flight, a harness that polls while a call is outstanding. Measured with a
+child that spins: **404 ms of CPU per 400 ms with the gate open, 2 ms while it
+holds — 196× less**, and thawed on every path out including the timeout, because
+an agent left frozen by a bug looks exactly like a hung machine. Opt-in:
+`NEFERTARI_GATE_WAIT_MS`, unset by default, since holding a reply changes what
+an agent observes.
+
 **The inference window.** After every tool call the machine does nothing for
 seconds while the model thinks — measured at 99–100% of a multi-step run, and
 `agentd` is the only process that sees both edges of it. The checkpoint's copy is

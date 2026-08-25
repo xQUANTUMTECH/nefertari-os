@@ -26,6 +26,7 @@ import { parseOcs, runOcs } from "./ocs.mjs";
 import { runTrajectories } from "./trajectories.mjs";
 import * as approvals from "./approvals.mjs";
 import * as dedupe from "./dedupe.mjs";
+import * as gatefreeze from "./gatefreeze.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -60,7 +61,7 @@ const MAX_PENDING = Number(process.env.NEFERTARI_MAX_PENDING) || 25;
 
 // Broker front door: classify, gate, journal. Returns null to proceed,
 // or a pending_approval response the tool must return as-is.
-function gate(tool, args, fp) {
+async function gate(tool, args, fp) {
   idle.enter();
   // Real work has arrived: whatever was being prepared stops now. Speculation
   // that competed with the call it was preparing for would be worse than none.
@@ -91,6 +92,33 @@ function gate(tool, args, fp) {
       }
       const entry = approvals.registerPending(tool, args, reason);
       journal.append({ id: entry.id, tool, args, class: cls, decision: "pending_approval", reason, ...idle.exit() });
+
+      // H4 — gate-freeze. Rather than hand the agent a "come back later", hold
+      // the reply and stop its process tree at zero CPU while the human
+      // decides. Opt-in: unset NEFERTARI_GATE_WAIT_MS and this is the same
+      // gate it always was.
+      if (gatefreeze.enabled()) {
+        const held = await gatefreeze.hold(() => approvals.listPending().some((x) => x.id === entry.id && x.approved));
+        if (held.resolved && approvals.consumeApproval(tool, args)) {
+          journal.append({
+            id: entry.id,
+            tool,
+            args,
+            class: cls,
+            decision: "approved_by_human",
+            reason,
+            waited_ms: held.waitedMs,
+            // Said rather than implied: on a host without cgroup v2 the wait
+            // happened but the tree was never actually stopped.
+            frozen: held.froze,
+            ...(held.froze ? {} : { freeze_skipped: held.reason }),
+          });
+          return { gated: false, cls, reason };
+        }
+        // Denied, or the human never came. The tree is already thawed; the
+        // agent gets the answer it would have got immediately.
+        journal.append({ id: entry.id, tool, args, class: cls, decision: "gate_timeout", reason, waited_ms: held.waitedMs });
+      }
       return {
         gated: true,
         response: text({
@@ -130,7 +158,7 @@ server.tool(
   "Read a file from the host filesystem.",
   { path: z.string().describe("Absolute path to read") },
   async ({ path: p }) => {
-    const g = gate("fs_read", { path: p });
+    const g = await gate("fs_read", { path: p });
     if (g.gated) return g.response;
     const r = ops.opFsRead({ path: p });
     record("fs_read", { path: p }, g.cls, "ok", r.meta);
@@ -146,7 +174,7 @@ server.tool(
     // The content is passed as identifying material, not as an argument: two
     // writes of different content to the same path are different actions, but
     // file content must not end up in the journal. See dedupe.mjs.
-    const g = gate("fs_write", { path: p }, { content });
+    const g = await gate("fs_write", { path: p }, { content });
     if (g.gated) return g.response;
     const r = ops.opFsWrite({ path: p, content });
     record("fs_write", { path: p }, g.cls, "ok", r.meta, { content });
@@ -159,7 +187,7 @@ server.tool(
   "Delete a single file on the host. The file is snapshotted first so the deletion is undoable.",
   { path: z.string() },
   async ({ path: p }) => {
-    const g = gate("fs_delete", { path: p });
+    const g = await gate("fs_delete", { path: p });
     if (g.gated) return g.response;
     const r = ops.opFsDelete({ path: p });
     if (r.meta) record("fs_delete", { path: p }, g.cls, "ok", r.meta);
@@ -172,7 +200,7 @@ server.tool(
   "Run a shell command on the host. Read-only commands pass; known state-changing commands pass with notification; anything else requires human approval first.",
   { command: z.string(), cwd: z.string().optional() },
   async ({ command, cwd }) => {
-    const g = gate("shell", { command });
+    const g = await gate("shell", { command });
     if (g.gated) return g.response;
     const r = await ops.opShell({ command, cwd }, g.cls);
     record("shell", { command }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, { notify: g.cls === CLASS.NOISY, ...r.meta });
@@ -197,7 +225,7 @@ server.tool(
     } catch (e) {
       return text({ status: "invalid", error: String(e.message || e) });
     }
-    const g = gate("plan_run", { dir, steps });
+    const g = await gate("plan_run", { dir, steps });
     if (g.gated) return g.response;
     const result = await runPlan(dir, steps, { label });
     record("plan_run", { dir, steps: steps.length, label }, g.cls, result.status, {
@@ -252,7 +280,7 @@ server.tool(
     } catch (e) {
       return text({ status: "invalid", error: String(e.message || e) });
     }
-    const g = gate("trajectories_run", { checkpoint_id, trajectories, eval_cmd });
+    const g = await gate("trajectories_run", { checkpoint_id, trajectories, eval_cmd });
     if (g.gated) return g.response;
     const result = await runTrajectories(checkpoint_id, trajectories, { evalCmd: eval_cmd });
     record(
@@ -271,7 +299,7 @@ server.tool(
   "Restore a snapshot created by a previous write/delete action.",
   { snapshot_id: z.string() },
   async ({ snapshot_id }) => {
-    const g = gate("undo", { snapshot_id });
+    const g = await gate("undo", { snapshot_id });
     if (g.gated) return g.response;
     const restored = snapshots.restore(snapshot_id);
     record("undo", { snapshot_id }, g.cls, "ok", { restored: restored.length });
@@ -290,7 +318,7 @@ server.tool(
     exclude: z.array(z.string()).optional().describe("Directory names to skip (default: ['node_modules'])"),
   },
   async ({ dir, label, exclude }) => {
-    const g = gate("timeline_checkpoint", { dir });
+    const g = await gate("timeline_checkpoint", { dir });
     if (g.gated) return g.response;
     const m = timeline.checkpoint(dir, { label, ...(exclude ? { exclude } : {}) });
     record("timeline_checkpoint", { dir, label }, g.cls, "ok", { checkpointId: m.id, files: m.files, bytes: m.bytes });
@@ -303,7 +331,7 @@ server.tool(
   "Create N isolated working copies of a checkpoint (one per strategy or per team member). Each fork is a real directory you can point tools at; work in forks never touches the original tree or the other forks. Keep the best result with timeline_promote.",
   { checkpoint_id: z.string(), n: z.number().int().min(1).max(16).default(1) },
   async ({ checkpoint_id, n }) => {
-    const g = gate("timeline_fork", { checkpoint_id, n });
+    const g = await gate("timeline_fork", { checkpoint_id, n });
     if (g.gated) return g.response;
     const forks = timeline.fork(checkpoint_id, n);
     record("timeline_fork", { checkpoint_id, n }, g.cls, "ok", { forks: forks.map((f) => f.id) });
@@ -316,7 +344,7 @@ server.tool(
   "Restore a directory to the state of a checkpoint. The current state is auto-checkpointed first, so the restore is itself undoable.",
   { checkpoint_id: z.string(), dir: z.string().optional().describe("Defaults to the dir the checkpoint was taken from") },
   async ({ checkpoint_id, dir }) => {
-    const g = gate("timeline_restore", { checkpoint_id, dir });
+    const g = await gate("timeline_restore", { checkpoint_id, dir });
     if (g.gated) return g.response;
     const r = timeline.restoreTo(checkpoint_id, dir);
     record("timeline_restore", { checkpoint_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
@@ -329,7 +357,7 @@ server.tool(
   "Make a winning fork's content the working directory (defaults to the dir its checkpoint came from). The current state is auto-checkpointed first, so promotion is itself undoable.",
   { fork_id: z.string(), dir: z.string().optional() },
   async ({ fork_id, dir }) => {
-    const g = gate("timeline_promote", { fork_id, dir });
+    const g = await gate("timeline_promote", { fork_id, dir });
     if (g.gated) return g.response;
     const r = timeline.promote(fork_id, dir);
     record("timeline_promote", { fork_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
@@ -346,7 +374,7 @@ server.tool(
     question: z.string().optional().describe("What you intend to do with it, to sharpen the judgement"),
   },
   async ({ path: p, content, question }) => {
-    const g = gate("egress_check", { path: p });
+    const g = await gate("egress_check", { path: p });
     if (g.gated) return g.response;
     let subject = content;
     if (subject === undefined) {
@@ -393,7 +421,7 @@ server.tool(
   "Check that the audit trail has not been altered. Every entry carries the hash of the one before it AND a signature from this daemon key, so editing, deleting, reordering or inserting an entry breaks the chain at a line this names — and rewriting the chain to hide that fails on the signature, which a forger cannot produce. What it still cannot see is truncation: no signature can object to its own absence, and closing that needs an external anchor.",
   {},
   async () => {
-    const g = gate("journal_verify", {});
+    const g = await gate("journal_verify", {});
     if (g.gated) return g.response;
     const v = journal.verify();
     record("journal_verify", {}, g.cls, v.ok ? `intact (${v.checked} entries, ${v.unsigned} unsigned)` : `BROKEN at line ${v.broken.line}`);
@@ -410,7 +438,7 @@ server.tool(
     limit: z.number().int().min(1).max(200).optional().describe("Max files returned (default 40)"),
   },
   async ({ dir, since, limit }) => {
-    const g = gate("working_set", { dir });
+    const g = await gate("working_set", { dir });
     if (g.gated) return g.response;
     const result = workingSet({ dir, since, limit });
     record("working_set", { dir, since }, g.cls, `${result.files.length} files, ${result.changed_since_last_action.length} changed`);
@@ -423,7 +451,7 @@ server.tool(
   "List all timeline checkpoints and forks (id, label, dir, size, created).",
   {},
   async () => {
-    const g = gate("timeline_list", {});
+    const g = await gate("timeline_list", {});
     if (g.gated) return g.response;
     record("timeline_list", {}, g.cls, "ok");
     return text(timeline.list());
@@ -435,7 +463,7 @@ server.tool(
   "Snapshot of host state: OS, uptime, memory, disk, recent journal entries.",
   {},
   async () => {
-    const g = gate("sys_status", {});
+    const g = await gate("sys_status", {});
     if (g.gated) return g.response;
     const status = {
       idle: idle.stats(),

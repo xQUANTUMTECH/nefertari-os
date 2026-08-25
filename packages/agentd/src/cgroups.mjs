@@ -92,14 +92,6 @@ export function available() {
   return cached;
 }
 
-/**
- * Ask the parent to hand `cpu` down to its children.
- *
- * Fails while the parent still holds processes directly — cgroup v2's "no
- * internal processes" rule — and that failure is not an error to hide: it means
- * this deployment put the daemon somewhere that cannot delegate, and priority
- * control will be missing while freezing still works. Both facts are reported.
- */
 function enableCpu() {
   // Delegation is not a property of one directory, it is a chain: a child only
   // has cpu knobs if EVERY ancestor passed cpu down to it. Writing to the
@@ -110,9 +102,23 @@ function enableCpu() {
     const p = path.join(dir, "cgroup.subtree_control");
     if (!fs.existsSync(p)) return false;
     if ((read(p) || "").includes("cpu")) continue;
-    // Refused while the cgroup still holds processes directly (v2's "no
-    // internal processes" rule). Not fatal: freezing works regardless, and the
-    // caller is told which half it got.
+
+    // NEVER enable a controller in a cgroup that holds processes directly.
+    // This is cgroup v2's "no internal processes" rule, and getting it wrong
+    // does not fail politely. On a host whose root cgroup holds processes —
+    // every container, which is where this is usually run — the write is
+    // ACCEPTED, and from then on every child rejects a process with EIO. The
+    // result is a group that can be created and never joined: the freeze stops
+    // working, and the reason is three calls upstream of the symptom.
+    //
+    // A priority knob is a nice-to-have. Putting the agent in the group is the
+    // guarantee. A nice-to-have must never be allowed to break one, so this
+    // gives up on cpu.idle rather than risk it.
+    //
+    // Found by running the gate-freeze on Docker Desktop, where `move` started
+    // returning ENOTSUP and this write was the cause.
+    if ((read(path.join(dir, "cgroup.procs")) || "").trim()) return false;
+
     if (write(p, "+cpu") !== true) return false;
   }
   return true;

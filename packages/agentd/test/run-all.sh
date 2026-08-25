@@ -16,6 +16,13 @@
 # for the real verdict:
 #   docker run --rm -v "$PWD:/repo" -w /repo/packages/agentd \
 #     --entrypoint /bin/sh nefertari-agentd:enforce-test -c 'bash test/run-all.sh'
+#
+# That run still SKIPS the cgroup half: freezing needs a writable
+# /sys/fs/cgroup, which an ordinary container does not have. For the freeze
+# and the gate-freeze to actually run:
+#   docker run --rm --privileged --cgroupns=private --user root \
+#     -v "$PWD:/repo" -w /repo/packages/agentd --entrypoint /bin/sh \
+#     nefertari-agentd:enforce-test -c 'mount -o remount,rw /sys/fs/cgroup; bash test/run-all.sh'
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
@@ -23,7 +30,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 if [ "$#" -gt 0 ]; then
   TESTS=("$@")
 else
-  TESTS=(timeline timeline-links speculate planshape workingset egress journal-chain dedupe idle cgroups inferd mcpsocket run plan trajectories enforce smoke http ocs e2e e2e-hard redteam)
+  TESTS=(timeline timeline-links speculate planshape workingset egress journal-chain dedupe idle cgroups gatefreeze inferd mcpsocket run plan trajectories enforce smoke http ocs e2e e2e-hard redteam)
 fi
 
 FAILED=()

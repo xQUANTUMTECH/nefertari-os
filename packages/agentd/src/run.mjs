@@ -41,6 +41,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { enforcerPath } from "./enforce.mjs";
 import * as journal from "./journal.mjs";
+import * as cgroups from "./cgroups.mjs";
+import * as gatefreeze from "./gatefreeze.mjs";
 
 /**
  * Parse `run`'s own flags, stopping at `--`. Everything after it is the agent's
@@ -148,9 +150,31 @@ export async function run(argv) {
     command: opts.command.join(" ").slice(0, 200),
   });
 
-  const child = spawn(p.file, p.args, { stdio: "inherit", cwd: p.workspace });
+  // The agent goes into a cgroup of its own, so the gate can stop the whole
+  // tree — the agent AND whatever it left running — while a human decides.
+  // Best-effort: on a host without cgroup v2 the agent runs exactly as before,
+  // because confinement is the guarantee here and this is an optimisation.
+  const group = `agent-${process.pid}`;
+  const cg = cgroups.ensure(group);
+
+  // The process joins the group ITSELF, before exec. Moving it afterwards is a
+  // race the mover usually loses: a shell forks its pipeline within
+  // microseconds and those grandchildren stay where the shell was. Measured
+  // once as a busy pipeline reporting less CPU than a sleep.
+  const [file, args] = cg.ok
+    ? ["/bin/sh", ["-c", `echo $$ > ${cgroups.procsPath(group)}; exec "$0" "$@"`, p.file, ...p.args]]
+    : [p.file, p.args];
+
+  const child = spawn(file, args, { stdio: "inherit", cwd: p.workspace });
+  if (cg.ok) gatefreeze.registerAgent({ cgroup: group, pid: child.pid, command: opts.command.join(" ").slice(0, 200) });
   return await new Promise((resolve) => {
-    child.on("exit", (code, signal) => resolve({ ...p, spawned: true, code, signal }));
+    child.on("exit", (code, signal) => {
+      // A stale registration would let the gate freeze a pid the OS has since
+      // handed to somebody else.
+      gatefreeze.clearAgent();
+      if (cg.ok) cgroups.destroy(group);
+      resolve({ ...p, spawned: true, code, signal, cgroup: cg.ok ? group : null });
+    });
     child.on("error", (e) => resolve({ ...p, spawned: false, error: e.message }));
   });
 }
