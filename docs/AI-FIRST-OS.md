@@ -376,6 +376,27 @@ init proprio (systemd resta).
       spiegarsi e restituire resta permesso.
       Resta aperta la **prelazione fra goal** di §4.2: qui c'è il contatore e il limite, non ancora
       lo scheduler che toglie quota a un goal per darla a un altro
+- [x] **Contesto virtuale: handle + fault-in** — §3. Un risultato che riempirebbe la finestra torna
+      come **handle** con anteprima, e il corpo resta sul disco del demone. *Numero: un log di
+      2,2MB entra nella finestra come **1.779 byte**; cercarci dentro costa **391 byte** su dati che
+      nella finestra non entrano mai.* Struttura preservata: solo il campo troppo grande viene
+      paginato, quindi `exitCode` resta leggibile senza fault-in.
+      **Niente viene mai troncato in silenzio:** un risultato paginato dice quanto è trattenuto e
+      nomina la chiamata che prende il resto. Un agente che riceve una risposta accorciata di
+      nascosto non può distinguerla da una completa, e risponderà con sicurezza da mezzo file.
+- [x] **`recall()`: il pacchetto di ripresa** — la memoria del sistema **derivata**, mai scritta
+      dall'agente. Obiettivo, cosa è cambiato sotto, cosa è trattenuto (con handle), cosa aspetta un
+      umano, quali risorse esterne tiene, quanto è piena la finestra. *Numero: 2.563 byte per
+      riorientare una sessione che aveva letto 907KB, con il dettaglio recuperabile in 1 chiamata.*
+      **Bug vero trovato dal test di ripresa:** il lease era intestato al **processo**, quindi una
+      sessione ripresa non riconosceva il proprio e non poteva rilasciarlo. Il lease appartiene al
+      **lavoro**, non al processo: ora l'identità è il goal quando c'è.
+- [x] **Race sulle approvazioni** — `listPending()` **riscriveva** il file a ogni chiamata, e il
+      gate-freeze lo interroga ogni 50 ms mentre un umano approva: il demone poteva leggere la coda,
+      l'umano approvare, e il demone riscriverci sopra la propria copia stantia. L'umano vedeva
+      *approvato* e l'agente restava in attesa fino al timeout. Sembrava flakiness del test (~1 run
+      su 3): era un lost update. Ora i poll usano `peekPending()` che non scrive mai, e il file si
+      sostituisce in modo atomico
 - [x] **Lease manager su URI esterni** — §4.5. Ogni lock che un sistema offre riguarda una risorsa
       locale; gli effetti di un agente stanno quasi sempre altrove. Due agenti che pushano lo stesso
       branch non stanno correndo su niente che `flock` possa vedere, e chi perde lo scopre dopo.
@@ -420,7 +441,73 @@ init proprio (systemd resta).
       **contenuto**, che nel journal non entra — senza, la seconda scrittura sullo stesso path
       spariva
 
+## Memoria e contesto in un OS gestito da un'IA
+
+Un OS pilotato da un'IA ha un problema che nessun OS ha mai avuto: **chi decide ha l'amnesia**. Non
+ogni tanto — strutturalmente, a ogni sessione, e anche a metà sessione ogni volta che l'harness fa
+compact. Qualunque disegno che tratti la conversazione come la memoria del sistema ha messo la
+memoria del sistema nell'unico posto che è garantito perderla.
+
+**La tentazione da evitare.** La soluzione ovvia è: prima del compact l'agente scrive un riassunto
+di quel che conta. Su un OS è la soluzione pericolosa. Un riassunto scritto dall'agente è il
+*resoconto che l'agente dà di sé stesso*: lossy, interessato, e non falsificabile una volta sparite
+le prove. Fallo su un OS e alla prima compattazione una convinzione sbagliata diventa permanente,
+senza più niente con cui confrontarla. Chi legge dopo — umano o modello — non può distinguere un
+fatto ricordato da un'ipotesi ricordata.
+
+**La regola, che è tutto il disegno:**
+
+> La memoria derivata deve essere sempre **ri-derivabile da un registro primario che l'agente non
+> può modificare**.
+
+### I livelli
+
+| | Cos'è | Proprietà |
+|---|---|---|
+| **0 — finestra** | il prompt adesso | volatile, piccola, lossy. **Mai** la fonte di verità |
+| **1 — journal** | cosa è successo | append-only, hash-chain, **firmato**: fatti che l'agente non può rivedere a posteriori |
+| **2 — store** | i byte stessi | tutto ciò che è stato paginato, intero su disco (`context.mjs`) |
+| **3 — viste derivate** | working set, handle, lease, pressione | ricalcolate a richiesta, autorevoli su niente, buttabili |
+| **4 — sapere durevole** | fra run diversi | **non costruito**, e non va costruito lasciando scrivere l'agente |
+
+Ogni riga del livello 3 porta la **provenienza** verso 1 o 2 — una entry di journal, un handle, un
+lease — così un agente ripreso distingue ciò che *sa* da ciò che starebbe solo assumendo.
+`recall()` restituisce **puntatori, non contenuto**: è l'indice che permette a una finestra piccola
+di raggiungere una memoria grande, ed è dimensionato per essere pagabile proprio nel momento in cui
+la finestra è più piena. *Numero: 2.563 byte per riorientare una sessione che aveva letto 907KB.*
+
+### Le quattro cose che possono andare storte, e cosa le ferma
+
+1. **Memoria confabulata** — l'agente "ricorda" qualcosa che non ha mai verificato. *Ferma:* ogni
+   riga di `recall` viene dal journal firmato, dallo store o dalla tabella lease. Nessuna riga è
+   asserzione dell'agente, e il campo `provenance` lo dice esplicitamente.
+2. **Memoria avvelenata** — contenuto letto dal mondo (una pagina, un log) diventa "memoria" e poi
+   istruzione. *Da fare:* la provenienza deve marcare l'origine **non fidata**, e la memoria va
+   trattata come dato, mai come istruzione. Oggi la provenienza c'è, l'etichetta di fiducia no.
+3. **Perdita silenziosa** — il compact butta qualcosa e nessuno se ne accorge. *Ferma:* ciò che è
+   trattenuto è **enumerabile** (`context_list`), quindi la perdita è rilevabile: il demone sa cosa
+   l'agente ha letto anche quando l'agente l'ha scordato.
+4. **Crescita illimitata** — lo store cresce per sempre. *Da fare:* TTL + tetto di dimensione, con
+   **l'eviction registrata**: un handle mancante deve spiegarsi da solo invece di dare un 404
+   misterioso a un agente che non può sapere perché.
+
+### Il pager è il modello locale
+
+Confine di egress e pager del contesto sono **lo stesso confine** (§3). La cosa che può leggere 10MB
+e decidere quali 2KB contano deve essere la cosa che quei 10MB non li fa uscire dalla macchina. Oggi
+il pager è meccanico — soglia, handle, `grep` — e funziona; il passo successivo è farlo scegliere al
+modello locale, che è l'unico modo di riassumere senza spedire.
+
 ### Prossime, ordinate
+- [ ] **Etichetta di fiducia sulla provenienza** *(giorni)* — un handle che viene dal web non è come
+      uno che viene dal filesystem locale. La memoria è **dato, mai istruzione**, e va marcata
+- [ ] **Eviction dello store con lapide** *(giorni)* — TTL + tetto, e un handle scaduto deve
+      rispondere *"c'era, è stato evitto il giorno X, ecco da dove riprenderlo"* invece di sparire
+- [ ] **Il modello locale come pager** *(1–2 settimane)* — oggi la paginazione è meccanica (soglia +
+      `grep`). Far scegliere al modello locale quali 2KB contano è §3, ed è l'unico modo di
+      riassumere senza spedire
+- [ ] **Livello 4: sapere durevole fra run** *(2–3 settimane)* — un fatto sopravvive a un run solo se
+      lo promuove un umano o un **controllo ri-eseguibile**. Mai l'agente che lo asserisce
 - [ ] **Definire la LINEA fra azione autonoma e azione che chiede permesso** *(1–2 settimane)* —
       oggi la linea esiste ma è **fissa e implicita**: `reversible`/`noisy` passano, `irreversible`
       va al gate. È un default ragionevole e un cattivo contratto, perché la linea giusta dipende

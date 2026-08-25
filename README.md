@@ -351,20 +351,43 @@ tree is frozen only when it holds nothing but the agent itself, and the answer
 says which case it took. The test builds the deadlock deliberately to show the
 rule is not theoretical.
 
-**The scarce resource is the model bill — and part of it is the daemon's own
-doing.** Most token budgets depend on the client reporting its usage, which
-makes them suggestions. One large component needs nobody's cooperation: the
-**bytes handed back**. Every byte of a tool result becomes input tokens on the
-next turn and on every turn after it. Measured: a 200KB result costs ~51 400
-tokens once and **~513 000 across ten turns — 10×**. `budget_status` reports
-the carried figure, not the flattering one, and keeps what the daemon measured
-apart from what the client said.
+**Memory is derived, never authored.** The tempting design is to let the agent
+write a summary before it is compacted. On a system layer that is the dangerous
+one: a summary written by the agent is the agent's own account of itself, and
+once the evidence is gone a mistaken belief becomes permanent with nothing left
+to check it against. So the rule is that **derived memory must always be
+re-derivable from a primary record the agent cannot edit** — the signed journal,
+the paged store, the lease table. `recall` returns that: the goal, what changed
+underneath, what large results are still held, what is waiting for a human, what
+external resources are held, and how full the window is. Pointers, not content,
+so it is affordable exactly when the window is fullest: **2 563 bytes** to
+re-orient a session that had read 907KB, with the detail one call away.
 
-The limit comes from the environment, set by whoever is paying. **There is no
-tool for an agent to raise its own budget**, deliberately. And running out does
-not refuse everything: new work stops, while explaining yourself and releasing
-your leases stay open — an agent that can call nothing cannot wind down, and
-cannot be understood afterwards.
+**Large results are paged, not delivered.** A result that would fill the window
+comes back as a **handle** with a preview, and the body stays on the daemon's
+disk. A 2.2MB build log enters the context as **1 779 bytes**; searching it
+costs one call and **391 bytes**, over data that never enters the window.
+
+The reason is not the bill. With prompt caching a re-sent prefix is cheap — what
+a large result actually costs is **turns**. It fills the window, the harness
+compacts sooner, and compaction drops whatever has not been referred to
+recently, which is exactly the detail a later turn needed. On a smaller model
+the ceiling arrives sooner and the loss is worse. Because the body is on disk,
+that compaction stops being fatal: `context_list` still names what was read and
+`context_fetch` still answers from it. In the test, an error line 45 000 lines
+into a log is recovered **after** everything the agent was holding is thrown
+away — the whole session costing 2 520 bytes of window against 2.3MB to read it
+once. Nothing is ever silently shortened: a paged result says what is held and
+names the call that gets the rest.
+
+**And the meter that goes with it.** `budget_status` separates what the daemon
+MEASURED — calls served and bytes that actually reached you, after paging —
+from what the client REPORTED, if it reported anything. The carried figure is
+labelled for what it is: window pressure, not an invoice. Limits come from the
+environment, set by whoever is paying; **there is no tool for an agent to raise
+its own budget**, and running out stops new work while leaving explaining
+yourself and releasing your leases open — an agent that can call nothing cannot
+wind down.
 
 **Leases on things that are not on this machine.** Every lock a system offers
 is about a local resource. An agent's effects are mostly somewhere else: two

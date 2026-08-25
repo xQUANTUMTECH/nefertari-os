@@ -34,7 +34,13 @@ function load() {
 
 function save(items) {
   ensureHome();
-  fs.writeFileSync(PENDING_FILE, JSON.stringify(items, null, 2));
+  // Written to a sibling and renamed. Two processes touch this file — the
+  // daemon and whatever the human approves from — and a reader that caught a
+  // half-written table would conclude there was nothing pending, which is the
+  // one wrong answer an approval queue must never give.
+  const tmp = `${PENDING_FILE}.tmp${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(items, null, 2));
+  fs.renameSync(tmp, PENDING_FILE);
 }
 
 function prune(items) {
@@ -69,7 +75,9 @@ export function consumeApproval(tool, args) {
   const items = prune(load());
   const idx = items.findIndex((i) => i.hash === hash && i.approved);
   if (idx === -1) {
-    save(items);
+    // Nothing consumed, so nothing to write. This runs on every irreversible
+    // action, most of which are NOT approved yet — writing here was the same
+    // lost-update hazard as the poll, on an even hotter path.
     return false;
   }
   items.splice(idx, 1);
@@ -77,10 +85,29 @@ export function consumeApproval(tool, args) {
   return true;
 }
 
+/**
+ * What is waiting, with anything expired dropped.
+ *
+ * Writes back ONLY when something actually expired. It used to write every
+ * time, which was a lost update waiting to happen: the gate polls this while
+ * a human approves, so the daemon could read the queue, the human could
+ * approve, and the daemon could then write its own stale copy back over the
+ * approval. The human saw it accepted and the agent went on waiting until it
+ * timed out. Found by the gate-freeze test failing about one run in three —
+ * exactly the shape of bug that gets called flakiness and left alone.
+ */
 export function listPending() {
   const items = prune(load());
-  save(items);
+  if (items.length !== load().length) save(items);
   return items;
+}
+
+/**
+ * The same answer, guaranteed not to write. This is what a poll should use:
+ * reading something every 50ms must never be able to change it.
+ */
+export function peekPending() {
+  return prune(load());
 }
 
 export function approve(id) {

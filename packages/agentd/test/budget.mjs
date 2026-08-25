@@ -1,10 +1,13 @@
-// The scarce resource is the model bill, and part of it is the daemon's fault.
+// Metering the part of the window the daemon itself fills.
 //
 // Most token-budget designs depend entirely on the client reporting its own
-// usage, which makes the budget a suggestion. There is one large component the
-// daemon owns outright and nobody counts: THE BYTES IT HANDS BACK. Every byte
-// of a tool result becomes input tokens on the next turn — and on every turn
-// after that, for as long as it stays in the window.
+// usage, which makes the budget a suggestion. One component the daemon owns
+// outright: THE BYTES IT HANDS BACK, counted at the point they leave and after
+// the pager has had its say.
+//
+// The carried figure is window PRESSURE, not an invoice — prompt caching makes
+// re-sending a prefix cheap, while nothing makes the window bigger. It is the
+// number that says how soon a compaction will take something.
 //
 //   - bytes issued are metered without anyone's cooperation
 //   - and their CARRY cost is the number that matters: issued once, paid per turn
@@ -157,15 +160,27 @@ const budget = await import("../src/budget.mjs");
     );
     console.log("  ok — the agent can read and report a budget, and has no tool to raise it");
 
-    // A real read, so the meter measures a real result rather than a fixture.
+    // A real read, so the meter measures a real result rather than a fixture —
+    // and one large enough that the pager takes it before the meter sees it.
+    // That composition is the point: the meter records what REACHED the agent,
+    // which is the number that decides how many turns are left before the
+    // window fills, not the number that would flatter a report.
     const bigFile = path.join(ws, "big.json");
     fs.writeFileSync(bigFile, JSON.stringify({ rows: Array.from({ length: 4000 }, (_, i) => ({ i, v: `row ${i}` })) }));
-    await tool("fs_read", { path: bigFile });
+    const onDisk = fs.statSync(bigFile).size;
+    const read = await tool("fs_read", { path: bigFile });
+    assert.equal(read.__paged, true, "sanity: a file this size is paged rather than delivered");
 
     const s = await tool("budget_status", {});
-    assert.ok(s.observed.context_bytes > 50000, `the read is metered as what actually went out (${s.observed.context_bytes} bytes)`);
+    assert.ok(
+      s.observed.context_bytes < onDisk / 10,
+      `the meter must record what reached the agent (${s.observed.context_bytes}), not what was on disk (${onDisk})`
+    );
     assert.equal(s.remaining.calls, 6 - s.observed.calls, "and the remaining calls follow the calls actually served");
-    console.log(`  ok — end to end: a real read metered at ${s.observed.context_bytes} bytes, ~${s.observed.est_tokens_issued} tokens`);
+    console.log(
+      `  ok — end to end: a ${Math.round(onDisk / 1024)}KB read reached the window as ` +
+        `${s.observed.context_bytes} bytes, and that is what the meter counts`
+    );
 
     // Spend the rest of the allowance on ordinary work.
     for (let i = 0; i < 6; i++) await tool("shell", { command: "true" });

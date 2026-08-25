@@ -135,28 +135,41 @@ at checkpoint time. A speculative optimisation must never be able to produce a
 wrong answer, only a useless one.
 
 ---
-## What a tool result actually costs
+## What a tool result actually costs — and it is not money
 
 A result is not paid for once. It enters the context on the next turn and is
-re-sent on every turn after that, for as long as it stays in the window — so
-the cost of handing back B bytes at turn *k* of an *N*-turn session is roughly
-B × (N − k), not B.
+re-sent on every turn after that, so handing back B bytes at turn *k* of an
+*N*-turn session puts B × (N − k) through the window.
 
 | One 200KB result, then nine ordinary turns | Estimated tokens |
 |---|---|
 | Issued | **~51 400** |
-| Actually paid across the ten turns | **~513 000** |
+| Carried across the ten turns | **~513 000** |
 
-**10×**, and it is the daemon that decides it: the bytes handed back are the
-one large part of an agent's bill that needs nobody's cooperation to measure.
-That is why the meter lives at the single point every result leaves through,
-and why `budget_status` reports `est_tokens_carried` rather than the flattering
-first figure.
+**The bill is not the interesting part of that 10×.** With prompt caching a
+re-sent prefix is cheap, so the money difference is much smaller than the token
+count implies. What the 10× buys you is a window that fills ten times faster —
+and the window filling is what triggers compaction, which drops whatever has
+not been referred to recently. That is usually the detail a later turn needed.
+On a smaller model the ceiling arrives sooner and the loss lands harder.
 
-Both numbers are estimates at four bytes to a token, and the raw byte count is
-reported next to them so the estimate can be re-done by anyone who disagrees.
-Client-reported usage, when a harness offers it, is recorded ALONGSIDE rather
-than instead — it is more accurate, and it comes from the thing being metered.
+So the answer is not a tighter budget, it is a pager:
+
+| A 2.2MB build log, read once and questioned later | Bytes of window |
+|---|---|
+| Handed over whole | **2 312 433** |
+| Handed over as a handle | **1 779** |
+| Whole session, including finding one error line after a compaction | **2 520** |
+
+The log is searched where it lives — 2MB scanned, the answer returned in **391
+bytes** — and the body stays on the daemon's disk, so the compaction that would
+have destroyed the answer leaves it one call away. `budget_status` reports the
+carried figure under the name it deserves: window pressure, not an invoice.
+
+Token figures are estimates at four bytes to a token, with the raw byte count
+reported next to them. Client-reported usage, when a harness offers it, is
+recorded ALONGSIDE rather than instead — it is more accurate, and it comes from
+the thing being metered.
 
 ---
 

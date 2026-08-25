@@ -208,6 +208,9 @@ export function classify(tool, args) {
     case "wait_for":
     case "lease_list":
     case "budget_status":
+    case "context_fetch":
+    case "context_list":
+    case "recall":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
       return isSensitivePath(args.path)

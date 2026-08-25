@@ -1,24 +1,31 @@
-// The scarce resource is not CPU. It is the model bill.
+// The scarce resource is not CPU, and it is not really money either.
 //
 // A scheduler written in kernel terms — CPU shares, IO weights — aims at the
-// wrong target. For N agents on one host the real ceiling is tokens per minute
-// and euros per day at the model endpoint, plus the rate limits of whatever
-// external APIs they touch. The kernel cannot see any of that. The broker can,
-// because every action passes through it.
+// wrong target: for N agents on one host the ceiling is the model endpoint, not
+// the machine. But calling that ceiling "the bill" is also wrong, and it took
+// being corrected to see it. With prompt caching a re-sent prefix is cheap, so
+// carrying a large result costs far less money than a raw token count suggests.
+//
+// WHAT IT ACTUALLY COSTS IS TURNS. Every byte handed back sits in the window
+// and is re-sent on each turn — so the real effect of a large result is that
+// the window fills sooner, the harness compacts sooner, and compaction is lossy
+// in the worst way: it drops what nothing has referred to recently, which is
+// exactly the detail a later turn needed. On a smaller model the ceiling
+// arrives sooner still. `est_tokens_carried` is therefore a measure of window
+// PRESSURE — how close this session is to losing something — and not an
+// invoice. The answer to it is the pager in context.mjs, not a tighter budget.
 //
 // WHAT THIS METERS ITSELF, AND WHAT IT HAS TO BE TOLD.
 //
 // Most "token budget" designs depend entirely on the client reporting its own
-// usage, which makes the budget a suggestion. There is one large component the
-// daemon owns outright, and it is the one nobody counts: THE BYTES IT HANDS
-// BACK. Every byte of a tool result becomes input tokens on the agent's next
-// turn — and on the turn after that, and the one after that, for as long as it
-// stays in the window. A 200KB file read is not a one-off 50k tokens; it is 50k
-// tokens re-paid on every subsequent turn of that session.
+// usage, which makes the budget a suggestion. There is one component the daemon
+// owns outright: THE BYTES IT HANDS BACK. Those it counts exactly, at the point
+// they leave, after the pager has had its say — so the figure is what actually
+// reached the agent rather than what a tool wanted to send.
 //
 // So this meters two different things and never mixes them up:
 //
-//   observed  — calls served, bytes issued into the context, and the carry cost
+//   observed  — calls served, bytes issued into the context, and the pressure
 //               those bytes imply. Counted here, needs nobody's cooperation.
 //   reported  — actual token usage from the client, if it chooses to say. More
 //               accurate when present, absent by default, and never assumed.
@@ -63,6 +70,7 @@ const WIND_DOWN = new Set([
   "lease_list",
   "lease_release",
   "working_set",
+  "recall",
   "sys_status",
 ]);
 
@@ -141,11 +149,13 @@ export function status() {
     observed: {
       ...observed,
       est_tokens_issued: observedTokens,
-      // The number worth putting in front of anyone deciding what a tool should
-      // return: bytes handed back are re-sent every turn, so their real cost is
-      // this rather than the first figure.
+      // Window pressure, not an invoice: bytes handed back are re-sent every
+      // turn, so this is how fast the window is filling and therefore how soon
+      // a compaction will take something. Prompt caching makes the money part
+      // of it much smaller; it does nothing about the window.
       est_tokens_carried: carriedTokens,
       carry_multiple: observedTokens > 0 ? Math.round((carriedTokens / observedTokens) * 10) / 10 : null,
+      carried_means: "window pressure — how fast the context is filling, not what it cost",
     },
     reported: reported.turns ? reported : null,
     remaining,

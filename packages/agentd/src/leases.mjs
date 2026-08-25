@@ -41,13 +41,24 @@ const DEFAULT_TTL_MS = Number(process.env.NEFERTARI_LEASE_TTL_MS) || 10 * 60 * 1
 const MAX_TTL_MS = Number(process.env.NEFERTARI_LEASE_MAX_TTL_MS) || 60 * 60 * 1000;
 
 /**
- * Who holds a lease. One server process per connection means one holder per
- * agent, which is the granularity that matters: two goals inside one agent are
- * one holder and cannot deadlock each other, two agents are two holders and
- * must not collide.
+ * Who holds a lease.
+ *
+ * A GOAL when there is one, and only a process otherwise. The distinction is
+ * not cosmetic: a lease belongs to the work, not to the process doing it. An
+ * agent that crashes and is restarted — or is compacted and resumes — is still
+ * the same piece of work, and it must recognise the resource it is already
+ * holding rather than find a stranger in it. Keying on the pid made a resumed
+ * session a different holder, which is how an agent ends up unable to release
+ * what it took. Found by the resumption test, which is the only place the two
+ * halves are visible at once.
+ *
+ * The cost is honest and worth naming: a pid-held lease is reclaimed the
+ * moment its process dies, while a goal-held one can only expire. That is the
+ * right trade for a durable identity — the resource is held for the work, and
+ * work that stops being done stops holding it when its time runs out.
  */
 export function holderId() {
-  return `pid:${process.pid}${process.env.NEFERTARI_GOAL ? `/${process.env.NEFERTARI_GOAL}` : ""}`;
+  return process.env.NEFERTARI_GOAL ? `goal:${process.env.NEFERTARI_GOAL}` : `pid:${process.pid}`;
 }
 
 function alive(holder) {

@@ -30,6 +30,8 @@ import * as gatefreeze from "./gatefreeze.mjs";
 import { waitFor, limits as waitLimits } from "./waitfor.mjs";
 import * as leases from "./leases.mjs";
 import * as budget from "./budget.mjs";
+import * as vctx from "./context.mjs";
+import { recall } from "./recall.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -56,7 +58,12 @@ const server = new McpServer({ name: "nefertari-agentd", version: "0.1.0" });
 // meter lives here too: a result is not charged for what it was meant to be,
 // it is charged for what actually went out.
 function text(s, tool) {
-  const body = typeof s === "string" ? s : JSON.stringify(s, null, 2);
+  // Paged BEFORE it is serialised and before it is charged for. A result
+  // that would fill the window is replaced by a handle here, so the meter
+  // below records what actually reached the agent — and so nothing that
+  // large enters the conversation in the first place. See context.mjs.
+  const paged = tool ? vctx.page(s, { tool }) : s;
+  const body = typeof paged === "string" ? paged : JSON.stringify(paged, null, 2);
   if (tool) budget.charge(tool, Buffer.byteLength(body));
   return { content: [{ type: "text", text: body }] };
 }
@@ -75,8 +82,6 @@ async function gate(tool, args, fp) {
   // that competed with the call it was preparing for would be worse than none.
   speculate.windowClose();
   const { class: cls, reason } = classify(tool, args);
-  // Idempotence by action hash. Before anything else decides what to do with
-  // this action, ask whether it already happened: the cheapest irreversible
   // Out of budget stops NEW work and allows winding down. An agent that can
   // call nothing cannot release its leases, cannot say what it was doing, and
   // cannot be understood afterwards — so the tools that explain or give back
@@ -102,11 +107,13 @@ async function gate(tool, args, fp) {
     };
   }
 
+  // Idempotence by action hash. Before anything else decides what to do with
+  // this action, ask whether it already happened: the cheapest irreversible
   // action is the one that does not run twice. Reads are exempt — see dedupe.mjs.
   const dup = dedupe.check(tool, args, cls, fp);
   if (dup) {
     journal.append({ tool, args, class: cls, decision: "duplicate_suppressed", reason: dup.reason, ...idle.exit() });
-    return { gated: true, response: text(dup) };
+    return { gated: true, response: text(dup, tool) };
   }
   // A lease somebody else holds is refused before anything else is decided.
   // Not a gate — a human cannot approve their way past another agent already
@@ -151,7 +158,9 @@ async function gate(tool, args, fp) {
       // decides. Opt-in: unset NEFERTARI_GATE_WAIT_MS and this is the same
       // gate it always was.
       if (gatefreeze.enabled()) {
-        const held = await gatefreeze.hold(() => approvals.listPending().some((x) => x.id === entry.id && x.approved));
+        // peek, not list: this runs every 50ms while a human decides, and a
+        // poll that writes can overwrite the very approval it is waiting for.
+        const held = await gatefreeze.hold(() => approvals.peekPending().some((x) => x.id === entry.id && x.approved));
         if (held.resolved && approvals.consumeApproval(tool, args)) {
           journal.append({
             id: entry.id,
@@ -608,6 +617,64 @@ server.tool(
     const s = budget.report(args);
     record("budget_report", args, g.cls, `turn ${s.reported?.turns}: ${(input_tokens || 0) + (output_tokens || 0)} tokens`);
     return text(s, "budget_report");
+  }
+);
+
+server.tool(
+  "context_fetch",
+  "Fault in part of a result that was too large to hand over whole. When a tool result would have filled your window it comes back as a handle instead, and the full text stays on the daemon's disk — it was NOT truncated and NOT lost. Use grep to search the whole thing without loading it (one call instead of sixty slices) and offset/limit to read around what you find. Handles survive this conversation being compacted, which is the point of them.",
+  {
+    handle: z.string().describe("The handle from a paged result, e.g. ctx_1a2b3c4d5e"),
+    grep: z.string().optional().describe("Regular expression. Returns matching lines with numbers and surrounding context, searched over bytes that never enter your window"),
+    context: z.number().int().min(0).max(20).optional().describe("Lines of context around each match (default 2)"),
+    offset: z.number().int().min(0).optional().describe("Byte offset, for reading a region"),
+    limit: z.number().int().min(1).optional().describe("Bytes to return (capped)"),
+  },
+  async ({ handle, grep, context: ctxLines, offset, limit }) => {
+    const g = await gate("context_fetch", { handle, grep });
+    if (g.gated) return g.response;
+    const r = vctx.fetch(handle, { grep, context: ctxLines, offset, limit });
+    record(
+      "context_fetch",
+      { handle, grep },
+      g.cls,
+      r.error ? `failed: ${r.error}` : grep ? `${r.matches} matches` : `${r.returned_bytes} bytes`
+    );
+    return text(r, "context_fetch");
+  }
+);
+
+server.tool(
+  "context_list",
+  "Everything this daemon is still holding for you: results that were too large for the window, with their handles, sizes and where they came from. This is the part a compaction cannot take — call it after losing the thread to find what you had already read, instead of reading it all again.",
+  {},
+  async () => {
+    const g = await gate("context_list", {});
+    if (g.gated) return g.response;
+    const held = vctx.list();
+    record("context_list", {}, g.cls, `${held.length} held`);
+    return text({ held, ...vctx.pagerStats() }, "context_list");
+  }
+);
+
+server.tool(
+  "recall",
+  "Where you are, rebuilt from the record rather than from memory. Call it FIRST in a session that was compacted, resumed, or handed over: it returns the goal, what this workspace has been through, what changed underneath, what large results are still held (with handles), what is waiting for a human, what external resources you hold, and how full your window is. It is made of POINTERS, not content — nothing is summarised, so anything named can be fetched in full. Everything in it comes from the signed journal, the paged store or the lease table, never from an agent's account of itself: if it says something happened, it happened.",
+  {
+    dir: z.string().optional().describe("Restrict the working set to paths under this directory"),
+    limit: z.number().int().min(1).max(50).optional().describe("How many of each kind to name (default 12)"),
+  },
+  async ({ dir, limit }) => {
+    const g = await gate("recall", { dir });
+    if (g.gated) return g.response;
+    const r = recall({ dir, limit });
+    record(
+      "recall",
+      { dir },
+      g.cls,
+      `${r.journal.entries} entries, ${r.held_in_store.length} held, ${r.pending_approvals.length} pending`
+    );
+    return text(r, "recall");
   }
 );
 
