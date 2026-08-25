@@ -313,7 +313,7 @@ tests skip with the reason rather than failing. To actually run them:
 docker run --rm --privileged --cgroupns=private --user root \
   -v "$PWD:/repo" -w /repo/packages/agentd --entrypoint /bin/sh \
   nefertari-agentd:enforce-test \
-  -c 'mount -o remount,rw /sys/fs/cgroup; bash test/run-all.sh'
+  -c 'sh test/cgroup-delegate.sh && bash test/run-all.sh'
 ```
 
 Worth knowing, because it hid a real bug for a while: the ordinary run reports

@@ -22,7 +22,12 @@
 # and the gate-freeze to actually run:
 #   docker run --rm --privileged --cgroupns=private --user root \
 #     -v "$PWD:/repo" -w /repo/packages/agentd --entrypoint /bin/sh \
-#     nefertari-agentd:enforce-test -c 'mount -o remount,rw /sys/fs/cgroup; bash test/run-all.sh'
+#     nefertari-agentd:enforce-test \
+#     -c 'sh test/cgroup-delegate.sh && bash test/run-all.sh'
+#
+# cgroup-delegate.sh moves the container's processes out of the root cgroup so
+# `cpu` can be delegated. Without it freezing works but cpu.idle and per-command
+# CPU accounting are unavailable, and those tests skip.
 
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
