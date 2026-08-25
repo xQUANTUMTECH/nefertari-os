@@ -135,6 +135,31 @@ at checkpoint time. A speculative optimisation must never be able to produce a
 wrong answer, only a useless one.
 
 ---
+## What a tool result actually costs
+
+A result is not paid for once. It enters the context on the next turn and is
+re-sent on every turn after that, for as long as it stays in the window — so
+the cost of handing back B bytes at turn *k* of an *N*-turn session is roughly
+B × (N − k), not B.
+
+| One 200KB result, then nine ordinary turns | Estimated tokens |
+|---|---|
+| Issued | **~51 400** |
+| Actually paid across the ten turns | **~513 000** |
+
+**10×**, and it is the daemon that decides it: the bytes handed back are the
+one large part of an agent's bill that needs nobody's cooperation to measure.
+That is why the meter lives at the single point every result leaves through,
+and why `budget_status` reports `est_tokens_carried` rather than the flattering
+first figure.
+
+Both numbers are estimates at four bytes to a token, and the raw byte count is
+reported next to them so the estimate can be re-done by anyone who disagrees.
+Client-reported usage, when a harness offers it, is recorded ALONGSIDE rather
+than instead — it is more accurate, and it comes from the thing being metered.
+
+---
+
 ## Speculation that cannot stall the thing it speeds up
 
 The pre-built copy used to run inside the daemon, yielding between files. One

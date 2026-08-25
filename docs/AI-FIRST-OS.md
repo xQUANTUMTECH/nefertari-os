@@ -358,6 +358,24 @@ init proprio (systemd resta).
       ogni misura tornava uno 0 ms convinto. Un metro che legge zero su un blocco noto di 300 ms
       non fallisce: ti dà ragione. Ora il metro viene verificato contro un blocco noto prima di
       essere usato
+- [x] **Budget token nel broker** — §4.2. La risorsa scarsa non è la CPU, è il conto del modello.
+      **Il punto che cambia il disegno:** quasi tutti i "token budget" si fidano di ciò che il
+      client dichiara, e un budget di cui ti devi fidare è un suggerimento. C'è però una voce
+      grossa che il demone possiede **da solo** e che nessuno conta: **i byte che restituisce**.
+      Ogni byte di un risultato diventa token di input al turno dopo — e a quello dopo ancora,
+      finché resta in finestra. *Numero: un risultato da 200KB costa ~51.400 token una volta e
+      ~513.000 su dieci turni, **10×**.* Quindi si misurano due cose tenute separate: `observed`
+      (chiamate servite, byte immessi nel contesto, e il **carry**) e `reported` (quel che dice il
+      client, se lo dice) — mai una al posto dell'altra, e un run non riportato dice a voce che è
+      non misurato invece di sembrare gratis.
+      **L'agente non può alzarsi il budget:** non esiste il tool, di proposito. Il limite arriva
+      dall'ambiente, da chi paga; l'agente può leggerlo e riportarci dentro, nient'altro. Un tetto
+      di spesa che l'agente può modificare è un tetto come lo è una serratura sul lato interno.
+      **Esaurirsi non è "rifiuta tutto":** un agente che non può chiamare niente non può rilasciare
+      i lease, non può dire dove era arrivato e non è ricostruibile dopo. Il lavoro nuovo si ferma,
+      spiegarsi e restituire resta permesso.
+      Resta aperta la **prelazione fra goal** di §4.2: qui c'è il contatore e il limite, non ancora
+      lo scheduler che toglie quota a un goal per darla a un altro
 - [x] **Lease manager su URI esterni** — §4.5. Ogni lock che un sistema offre riguarda una risorsa
       locale; gli effetti di un agente stanno quasi sempre altrove. Due agenti che pushano lo stesso
       branch non stanno correndo su niente che `flock` possa vedere, e chi perde lo scopre dopo.
@@ -430,7 +448,6 @@ init proprio (systemd resta).
       journalizzato** (chi ha allargato la linea, quando, per quale goal), e nessun profilo deve
       poter rendere invisibile un'azione — al massimo può renderla *autonoma*, mai *non registrata*.
       Il journal firmato di §4.4 è ciò che rende questa distinzione verificabile invece che promessa.
-- [ ] **Scheduler a budget token** *(2 settimane)* — §4.2
 - [ ] **H2 fork overlayfs + upper tmpfs** *(2–3 settimane)* — sblocca anche gli errori con write-set
 - [ ] **Contesto virtuale**: handle + fault-in + budget, con il modello locale come pager *(§3)*
 - [ ] **Seam `screen` con driver** (cdp / extension stile gemma-gem / native / screenpipe) + **classi

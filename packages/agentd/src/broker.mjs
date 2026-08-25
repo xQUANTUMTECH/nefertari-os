@@ -207,6 +207,7 @@ export function classify(tool, args) {
     // and refused unless it is read-only — see waitfor.mjs.
     case "wait_for":
     case "lease_list":
+    case "budget_status":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
       return isSensitivePath(args.path)
@@ -217,6 +218,10 @@ export function classify(tool, args) {
         ? { class: CLASS.IRREVERSIBLE, reason: "delete of a sensitive path (startup/cron/service/auth)" }
         : { class: CLASS.REVERSIBLE, reason: "delete covered by snapshot" };
     // Taking and giving back a lease changes nothing outside this machine:
+    // Reporting what a turn cost changes nothing on the host, but it is not a
+    // read either: it writes into the meter the operator is watching.
+    case "budget_report":
+      return { class: CLASS.NOISY, reason: "records the client's own account of what it spent" };
     // it is a note in a table saying who intends to. Notified rather than
     // silent, because who holds what is exactly the kind of thing a human
     // wants to see when two agents are running.

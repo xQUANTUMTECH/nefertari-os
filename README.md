@@ -351,6 +351,21 @@ tree is frozen only when it holds nothing but the agent itself, and the answer
 says which case it took. The test builds the deadlock deliberately to show the
 rule is not theoretical.
 
+**The scarce resource is the model bill — and part of it is the daemon's own
+doing.** Most token budgets depend on the client reporting its usage, which
+makes them suggestions. One large component needs nobody's cooperation: the
+**bytes handed back**. Every byte of a tool result becomes input tokens on the
+next turn and on every turn after it. Measured: a 200KB result costs ~51 400
+tokens once and **~513 000 across ten turns — 10×**. `budget_status` reports
+the carried figure, not the flattering one, and keeps what the daemon measured
+apart from what the client said.
+
+The limit comes from the environment, set by whoever is paying. **There is no
+tool for an agent to raise its own budget**, deliberately. And running out does
+not refuse everything: new work stops, while explaining yourself and releasing
+your leases stay open — an agent that can call nothing cannot wind down, and
+cannot be understood afterwards.
+
 **Leases on things that are not on this machine.** Every lock a system offers
 is about a local resource. An agent's effects are mostly somewhere else: two
 agents pushing the same branch, deploying the same service or charging the same

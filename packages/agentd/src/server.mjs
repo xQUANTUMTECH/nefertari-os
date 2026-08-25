@@ -29,6 +29,7 @@ import * as dedupe from "./dedupe.mjs";
 import * as gatefreeze from "./gatefreeze.mjs";
 import { waitFor, limits as waitLimits } from "./waitfor.mjs";
 import * as leases from "./leases.mjs";
+import * as budget from "./budget.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -51,8 +52,13 @@ ensureHome();
 
 const server = new McpServer({ name: "nefertari-agentd", version: "0.1.0" });
 
-function text(s) {
-  return { content: [{ type: "text", text: typeof s === "string" ? s : JSON.stringify(s, null, 2) }] };
+// Every byte that reaches the agent leaves through here, which is why the
+// meter lives here too: a result is not charged for what it was meant to be,
+// it is charged for what actually went out.
+function text(s, tool) {
+  const body = typeof s === "string" ? s : JSON.stringify(s, null, 2);
+  if (tool) budget.charge(tool, Buffer.byteLength(body));
+  return { content: [{ type: "text", text: body }] };
 }
 
 // Cap on how many irreversible actions can sit unresolved at once. Without it,
@@ -71,6 +77,31 @@ async function gate(tool, args, fp) {
   const { class: cls, reason } = classify(tool, args);
   // Idempotence by action hash. Before anything else decides what to do with
   // this action, ask whether it already happened: the cheapest irreversible
+  // Out of budget stops NEW work and allows winding down. An agent that can
+  // call nothing cannot release its leases, cannot say what it was doing, and
+  // cannot be understood afterwards — so the tools that explain or give back
+  // stay open. See budget.mjs.
+  if (!budget.allowed(tool)) {
+    const s = budget.status();
+    journal.append({ tool, args, class: cls, decision: "budget_exhausted", exhausted: s.exhausted, ...idle.exit() });
+    return {
+      gated: true,
+      response: text(
+        {
+          status: "budget_exhausted",
+          exhausted: s.exhausted,
+          spent: s.observed,
+          reported: s.reported,
+          limits: s.limits,
+          still_available: budget.windDownTools(),
+          advice:
+            "the budget for this session is gone. Release any leases you hold, say where you got to, and stop. Only a human can raise the limit — there is no tool for it, deliberately.",
+        },
+        tool
+      ),
+    };
+  }
+
   // action is the one that does not run twice. Reads are exempt — see dedupe.mjs.
   const dup = dedupe.check(tool, args, cls, fp);
   if (dup) {
@@ -93,7 +124,7 @@ async function gate(tool, args, fp) {
         advice:
           `another agent holds ${clash.uri} for another ${Math.ceil(clash.expires_in_ms / 1000)}s. ` +
           `Wait for it, work on something that does not touch it, or ask a human whether to take it over.`,
-      }),
+      }, tool),
     };
   }
 
@@ -109,7 +140,7 @@ async function gate(tool, args, fp) {
             status: "rate_limited",
             reason: `approval queue is full (${pend.length}/${MAX_PENDING}). A human must resolve pending actions before new irreversible ones are accepted.`,
             pending: pend.length,
-          }),
+          }, tool),
         };
       }
       const entry = approvals.registerPending(tool, args, reason);
@@ -149,7 +180,7 @@ async function gate(tool, args, fp) {
           class: cls,
           reason,
           how_to_approve: `The human must run: nefertari approve ${entry.id} (or: node src/cli.mjs approve ${entry.id}). Then retry this exact call.`,
-        }),
+        }, tool),
       };
     }
     journal.append({ tool, args, class: cls, decision: "approved_by_human", reason });
@@ -184,7 +215,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = ops.opFsRead({ path: p });
     record("fs_read", { path: p }, g.cls, "ok", r.meta);
-    return text(r.output);
+    return text(r.output, "fs_read");
   }
 );
 
@@ -200,7 +231,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = ops.opFsWrite({ path: p, content });
     record("fs_write", { path: p }, g.cls, "ok", r.meta, { content });
-    return text(r.output);
+    return text(r.output, "fs_write");
   }
 );
 
@@ -213,7 +244,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = ops.opFsDelete({ path: p });
     if (r.meta) record("fs_delete", { path: p }, g.cls, "ok", r.meta);
-    return text(r.output);
+    return text(r.output, "fs_delete");
   }
 );
 
@@ -230,7 +261,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = await ops.opShell({ command, cwd }, g.cls);
     record("shell", { command, cwd }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, { notify: g.cls === CLASS.NOISY, ...r.meta });
-    return text(r.output);
+    return text(r.output, "shell");
   }
 );
 
@@ -249,7 +280,7 @@ server.tool(
     try {
       steps = normalizeSteps(steps);
     } catch (e) {
-      return text({ status: "invalid", error: String(e.message || e) });
+      return text({ status: "invalid", error: String(e.message || e) }, "plan_run");
     }
     const g = await gate("plan_run", { dir, steps });
     if (g.gated) return g.response;
@@ -258,7 +289,7 @@ server.tool(
       planId: result.plan_id,
       notify: g.cls === CLASS.NOISY || result.status !== "completed",
     });
-    return text(result);
+    return text(result, "plan_run");
   }
 );
 
@@ -276,7 +307,7 @@ server.tool(
     try {
       parseOcs(document);
     } catch (e) {
-      return text({ status: "failed", asserts: [], steps_run: 0, error: String(e.message || e) });
+      return text({ status: "failed", asserts: [], steps_run: 0, error: String(e.message || e) }, "ocs_run");
     }
     const report = await runOcs(document, {
       dry_run,
@@ -286,7 +317,7 @@ server.tool(
       steps_run: report.steps_run,
       notify: report.status === "failed",
     });
-    return text(report);
+    return text(report, "ocs_run");
   }
 );
 server.tool(
@@ -304,7 +335,7 @@ server.tool(
     try {
       trajectories = normalizeTrajectories(trajectories);
     } catch (e) {
-      return text({ status: "invalid", error: String(e.message || e) });
+      return text({ status: "invalid", error: String(e.message || e) }, "trajectories_run");
     }
     const g = await gate("trajectories_run", { checkpoint_id, trajectories, eval_cmd });
     if (g.gated) return g.response;
@@ -316,7 +347,7 @@ server.tool(
       result.winner ? `winner ${result.winner.fork_id}` : "no winner",
       { notify: g.cls === CLASS.NOISY }
     );
-    return text(result);
+    return text(result, "trajectories_run");
   }
 );
 
@@ -329,7 +360,7 @@ server.tool(
     if (g.gated) return g.response;
     const restored = snapshots.restore(snapshot_id);
     record("undo", { snapshot_id }, g.cls, "ok", { restored: restored.length });
-    return text({ status: "restored", snapshot_id, files: restored });
+    return text({ status: "restored", snapshot_id, files: restored }, "undo");
   }
 );
 
@@ -348,7 +379,7 @@ server.tool(
     if (g.gated) return g.response;
     const m = timeline.checkpoint(dir, { label, ...(exclude ? { exclude } : {}) });
     record("timeline_checkpoint", { dir, label }, g.cls, "ok", { checkpointId: m.id, files: m.files, bytes: m.bytes });
-    return text({ status: "checkpointed", checkpoint_id: m.id, files: m.files, bytes: m.bytes });
+    return text({ status: "checkpointed", checkpoint_id: m.id, files: m.files, bytes: m.bytes }, "timeline_checkpoint");
   }
 );
 
@@ -361,7 +392,7 @@ server.tool(
     if (g.gated) return g.response;
     const forks = timeline.fork(checkpoint_id, n);
     record("timeline_fork", { checkpoint_id, n }, g.cls, "ok", { forks: forks.map((f) => f.id) });
-    return text({ status: "forked", forks: forks.map((f) => ({ fork_id: f.id, path: f.path })) });
+    return text({ status: "forked", forks: forks.map((f) => ({ fork_id: f.id, path: f.path })) }, "timeline_fork");
   }
 );
 
@@ -374,7 +405,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = timeline.restoreTo(checkpoint_id, dir);
     record("timeline_restore", { checkpoint_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
-    return text({ status: "restored", ...r });
+    return text({ status: "restored", ...r }, "timeline_restore");
   }
 );
 
@@ -387,7 +418,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = timeline.promote(fork_id, dir);
     record("timeline_promote", { fork_id, dir: r.dir }, g.cls, "ok", { safetyCheckpoint: r.safety_checkpoint, notify: true });
-    return text({ status: "promoted", ...r });
+    return text({ status: "promoted", ...r }, "timeline_promote");
   }
 );
 
@@ -404,11 +435,11 @@ server.tool(
     if (g.gated) return g.response;
     let subject = content;
     if (subject === undefined) {
-      if (!p) return text({ status: "invalid", error: "give either path or content" });
+      if (!p) return text({ status: "invalid", error: "give either path or content" }, "egress_check");
       try {
         subject = fs.readFileSync(p, "utf8");
       } catch (e) {
-        return text({ status: "invalid", error: String(e.message) });
+        return text({ status: "invalid", error: String(e.message) }, "egress_check");
       }
     }
     // Screened with masking forced on, whatever the deployment mode: this tool
@@ -438,7 +469,7 @@ server.tool(
           : undefined,
     };
     record("egress_check", { path: p }, g.cls, `${scan.findings.length} pattern(s), judgement ${judgement ? (judgement.sensitive ? "SENSITIVE" : "SAFE") : "none"}`);
-    return text(result);
+    return text(result, "egress_check");
   }
 );
 
@@ -451,7 +482,7 @@ server.tool(
     if (g.gated) return g.response;
     const v = journal.verify();
     record("journal_verify", {}, g.cls, v.ok ? `intact (${v.checked} entries, ${v.unsigned} unsigned)` : `BROKEN at line ${v.broken.line}`);
-    return text(v);
+    return text(v, "journal_verify");
   }
 );
 
@@ -481,7 +512,7 @@ server.tool(
     const r = await waitFor(args, { timeoutMs: timeout_ms, pollMs: poll_ms });
     if (r.error) {
       record("wait_for", args, g.cls, `refused: ${r.error}`);
-      return text({ status: "refused", reason: r.error });
+      return text({ status: "refused", reason: r.error }, "wait_for");
     }
     record(
       "wait_for",
@@ -490,7 +521,7 @@ server.tool(
       r.satisfied ? `satisfied after ${r.waited_ms}ms` : `timed out after ${r.waited_ms}ms`,
       { waited_ms: r.waited_ms, polls: r.polls, frozen: r.frozen }
     );
-    return text(r);
+    return text(r, "wait_for");
   }
 );
 
@@ -518,7 +549,7 @@ server.tool(
       r.ok ? (r.extended ? `extended ${uri}` : `took ${uri}`) : `refused: held by ${r.held_by}`,
       { uri, ok: r.ok }
     );
-    return text(r);
+    return text(r, "lease_acquire");
   }
 );
 
@@ -531,7 +562,7 @@ server.tool(
     if (g.gated) return g.response;
     const r = leases.release(uri);
     record("lease_release", { uri }, g.cls, r.released ? `released ${uri}` : r.reason || "nothing to release", { uri });
-    return text(r);
+    return text(r, "lease_release");
   }
 );
 
@@ -544,7 +575,39 @@ server.tool(
     if (g.gated) return g.response;
     const all = leases.list();
     record("lease_list", {}, g.cls, `${all.length} held`);
-    return text({ holder: leases.holderId(), leases: all });
+    return text({ holder: leases.holderId(), leases: all }, "lease_list");
+  }
+);
+
+server.tool(
+  "budget_status",
+  "What this session has cost so far and what is left. Two kinds of number, kept apart on purpose: what the daemon MEASURED ITSELF — calls served and bytes handed into your context — and what the client REPORTED, if it reported anything. The figure worth reading is est_tokens_carried: bytes handed back are re-sent on every later turn, so a large tool result is not paid once, it is paid every turn it stays in the window. Call this before asking for something big.",
+  {},
+  async () => {
+    const g = await gate("budget_status", {});
+    if (g.gated) return g.response;
+    const s = budget.status();
+    record("budget_status", {}, g.cls, `${s.observed.calls} calls, ~${s.observed.est_tokens_carried} tokens carried`);
+    return text(s, "budget_status");
+  }
+);
+
+server.tool(
+  "budget_report",
+  "Tell the daemon what your last turn actually cost, if your harness knows. Optional and more accurate than the daemon's own estimate — but it comes from the thing being metered, so it is recorded alongside the measured figures rather than replacing them. There is deliberately no tool for RAISING a budget: only whoever is paying can do that, from the environment.",
+  {
+    input_tokens: z.number().int().min(0).optional(),
+    output_tokens: z.number().int().min(0).optional(),
+    usd: z.number().min(0).optional().describe("What the provider says the turn cost"),
+    model: z.string().optional(),
+  },
+  async ({ input_tokens, output_tokens, usd, model }) => {
+    const args = { input_tokens, output_tokens, usd, model };
+    const g = await gate("budget_report", args);
+    if (g.gated) return g.response;
+    const s = budget.report(args);
+    record("budget_report", args, g.cls, `turn ${s.reported?.turns}: ${(input_tokens || 0) + (output_tokens || 0)} tokens`);
+    return text(s, "budget_report");
   }
 );
 
@@ -561,7 +624,7 @@ server.tool(
     if (g.gated) return g.response;
     const result = workingSet({ dir, since, limit });
     record("working_set", { dir, since }, g.cls, `${result.files.length} files, ${result.changed_since_last_action.length} changed`);
-    return text(result);
+    return text(result, "working_set");
   }
 );
 
@@ -573,7 +636,7 @@ server.tool(
     const g = await gate("timeline_list", {});
     if (g.gated) return g.response;
     record("timeline_list", {}, g.cls, "ok");
-    return text(timeline.list());
+    return text(timeline.list(), "timeline_list");
   }
 );
 
@@ -596,7 +659,7 @@ server.tool(
       recentJournal: journal.tail(5),
     };
     record("sys_status", {}, g.cls, "ok");
-    return text(status);
+    return text(status, "sys_status");
   }
 );
 
