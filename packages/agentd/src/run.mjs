@@ -24,7 +24,14 @@
 // child would inherit this confinement and lose the ability to write the very
 // snapshots and journal that make the arrangement worth anything.
 //
-// THE ALLOWLIST IS DECLARED, NEVER INFERRED. Only /tmp is writable by default.
+// READS ARE THE OTHER HALF, and they are the half that matters for secrets.
+// Confining writes protects the machine; it does nothing about a credential,
+// because an agent that cannot WRITE ~/.aws can still read it — and everything
+// an agent reads is sent to a third-party API on its next turn. `--deny-read`
+// makes a path unreadable, so the only way to use a credential is to ask the
+// daemon to use it on the agent's behalf.
+//
+// THE LISTS ARE DECLARED, NEVER INFERRED. Only /tmp is writable by default.
 // Agents keep state in places that vary by client (~/.claude, ~/.dsh, ~/.grok),
 // and guessing at them would either break the agent or quietly widen the hole
 // the whole feature exists to close. Name them with --allow.
@@ -44,11 +51,12 @@ export function parseArgs(argv) {
   const sep = argv.indexOf("--");
   const mine = sep === -1 ? argv : argv.slice(0, sep);
   const command = sep === -1 ? [] : argv.slice(sep + 1);
-  const opts = { workspace: process.cwd(), allow: [], dryRun: false };
+  const opts = { workspace: process.cwd(), allow: [], denyRead: [], dryRun: false };
   for (let i = 0; i < mine.length; i++) {
     const a = mine[i];
     if (a === "--workspace" || a === "-w") opts.workspace = mine[++i];
     else if (a === "--allow") opts.allow.push(mine[++i]);
+    else if (a === "--deny-read") opts.denyRead.push(mine[++i]);
     else if (a === "--dry-run") opts.dryRun = true;
     else if (a.startsWith("-")) throw new Error(`unknown option ${a} (agent flags go after --)`);
   }
@@ -61,7 +69,7 @@ export function parseArgs(argv) {
  * decision can be shown with --dry-run and asserted in a test: a sandbox whose
  * shape you cannot inspect is a sandbox nobody will trust.
  */
-export function plan({ workspace, allow, command }) {
+export function plan({ workspace, allow, denyRead = [], command }) {
   const bin = enforcerPath();
   if (!bin) {
     throw new Error(
@@ -103,10 +111,23 @@ export function plan({ workspace, allow, command }) {
     }
   }
 
+  const unreadable = denyRead.map((p) => path.resolve(p));
+  // Denying a read inside the workspace would leave the agent unable to see the
+  // code it is meant to work on, which is not a boundary, it is a broken setup.
+  for (const d of unreadable) {
+    if (inside(d, ws)) {
+      throw new Error(
+        `--deny-read ${d} is inside the workspace. The agent has to be able to READ what it works on; ` +
+          `what it must not do is write it behind the broker's back.`
+      );
+    }
+  }
+
   const args = [];
   for (const w of writable) args.push("--allow-write", w);
+  for (const d of unreadable) args.push("--deny-read", d);
   args.push("--", ...command);
-  return { file: bin, args, writable, workspace: ws };
+  return { file: bin, args, writable, unreadable, workspace: ws };
 }
 
 export async function run(argv) {
@@ -121,7 +142,9 @@ export async function run(argv) {
     tool: "run",
     class: "noisy",
     decision: "executed",
-    outcome: `agent confined: workspace ${p.workspace} read-only, writable ${p.writable.join(", ")}`,
+    outcome:
+      `agent confined: workspace ${p.workspace} read-only, writable ${p.writable.join(", ")}` +
+      (p.unreadable.length ? `, unreadable ${p.unreadable.join(", ")}` : ""),
     command: opts.command.join(" ").slice(0, 200),
   });
 

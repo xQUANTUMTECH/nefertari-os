@@ -88,9 +88,13 @@ Usage:
   nefertari snapshots         list snapshots
   nefertari undo <snap_id>    restore a snapshot
   nefertari serve             headless approval API over HTTP (containers/Railway)
-  nefertari run [-w dir] [--allow p]... -- <agent cmd>
+  nefertari run [-w dir] [--allow p]... [--deny-read p]... -- <agent cmd>
                               run the agent with the workspace READ-ONLY, so its
-                              only way to change it is through the daemon
+                              only way to change it is through the daemon.
+                              --deny-read makes a path unreadable: an agent that
+                              cannot read a credential cannot forward it to a
+                              model. Usual suspects: ~/.aws ~/.ssh ~/.config/gh
+                              ~/.docker ~/.kube ~/.netrc
                               (--dry-run shows the sandbox without starting it)
   nefertari mcp-socket <p>    serve MCP on a local socket, so the agent connects
                               instead of owning the daemon (required before the

@@ -105,6 +105,52 @@ fs.writeFileSync(path.join(ws, "existing.txt"), "before");
   console.log("  ok — it cannot widen its own sandbox from inside");
 }
 
+// --- reads are the other half, and the half that matters for secrets ---
+{
+  const secrets = fs.mkdtempSync(path.join(wsRoot, "nef-secrets-"));
+  const cred = path.join(secrets, "credentials");
+  fs.writeFileSync(cred, "aws_secret_access_key = AKIAIOSFODNN7EXAMPLE\n");
+  const ownConfig = path.join(wsRoot, `nef-agentcfg-${process.pid}.txt`);
+  fs.writeFileSync(ownConfig, "theme=dark\n");
+
+  // Without --deny-read, write confinement does nothing for a credential.
+  {
+    const p = plan({ workspace: ws, allow: [], command: ["/bin/sh", "-c", `cat ${cred}`] });
+    const out = execFileSync(p.file, p.args, { stdio: "pipe" }).toString();
+    assert.match(out, /AKIA/, "confining WRITES leaves a secret readable — which is why reads need their own answer");
+  }
+
+  const p = plan({ workspace: ws, allow: [], denyRead: [secrets], command: ["/bin/sh", "-c", `cat ${cred}`] });
+  assert.ok(p.args.includes("--deny-read"), "the denial must reach the enforcer");
+  let denied = false;
+  let got = "";
+  try {
+    got = execFileSync(p.file, p.args, { stdio: "pipe" }).toString();
+  } catch {
+    denied = true;
+  }
+  assert.ok(denied || !/AKIA/.test(got), "a denied path must not be readable, and the secret must not appear");
+  console.log("  ok — a denied path is unreadable: the secret cannot enter the context at all");
+
+  // And the denial must be surgical: everything else still readable, or the
+  // agent is simply broken rather than confined.
+  const q = plan({ workspace: ws, allow: [], denyRead: [secrets], command: ["/bin/sh", "-c", `cat ${ownConfig}`] });
+  assert.match(execFileSync(q.file, q.args, { stdio: "pipe" }).toString(), /theme=dark/, "everything not denied stays readable");
+  const r = plan({ workspace: ws, allow: [], denyRead: [secrets], command: ["/bin/sh", "-c", `cat ${path.join(ws, "existing.txt")}`] });
+  assert.match(execFileSync(r.file, r.args, { stdio: "pipe" }).toString(), /before/, "and the workspace stays readable — the agent has to see its work");
+  console.log("  ok — the denial is surgical: config, binaries and the workspace stay readable");
+
+  assert.throws(
+    () => plan({ workspace: ws, allow: [], denyRead: [path.join(ws, "src")], command: ["true"] }),
+    /inside the workspace/,
+    "denying a read inside the workspace is a broken setup, not a boundary"
+  );
+  console.log("  ok — denying a read inside the workspace is refused");
+
+  fs.rmSync(secrets, { recursive: true, force: true });
+  fs.rmSync(ownConfig, { force: true });
+}
+
 // --- SECOND HALF: it can still change the workspace by asking the daemon ---
 const SOCK = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "nef-run-sock-")), "d.sock");
 const daemon = spawn(process.execPath, [CLI, "mcp-socket", SOCK], {
