@@ -95,10 +95,25 @@ assert.equal(executed.exitCode, 0, `after approval the command runs: ${JSON.stri
 assert.ok(!fs.existsSync(dataDir), "after approval the cleanup actually happened");
 done("human approved → retry executed exactly once → data removed");
 
-// 5. single-use: replaying the approved call must be gated again
+// 5. the approved call cannot be replayed — for two independent reasons, and
+//    both are worth proving, because each covers a case the other does not.
+//
+//    Immediately: it is the same action as the one before it with nothing in
+//    between, so it is a duplicate and does not run at all. This is what
+//    catches a model re-emitting a tool call it already made.
 const replay = await call("shell", nuke);
-assert.equal(replay.status, "pending_approval", "approval must not be reusable");
-done("replay of the approved command is gated again (single-use)");
+assert.equal(replay.status, "duplicate_suppressed", "an immediate replay is a duplicate, and must not run");
+assert.ok(!fs.existsSync(dataDir), "and nothing new happened on disk");
+done("immediate replay suppressed as a duplicate — the effect happened exactly once");
+
+//    And later: once the agent has done something else, the duplicate rule no
+//    longer applies, and what stops the replay is the approval itself being
+//    single-use. Without this second check, dedupe would be silently standing
+//    in for the gate, and the day the window expired the gate would be open.
+await call("fs_write", { path: conf, content: good });
+const later = await call("shell", nuke);
+assert.equal(later.status, "pending_approval", "approval must not be reusable, whatever happened in between");
+done("replay after other work is gated again (the approval was single-use)");
 
 // 6. the journal is a complete audit trail
 const j = await call("journal_tail", { n: 100 });

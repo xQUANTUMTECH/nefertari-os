@@ -344,9 +344,15 @@ init proprio (systemd resta).
       impedisce di riscrivere il registro da capo. Un falsario può ricalcolare ogni hash, non può
       firmare, e una entry non firmata dopo una firmata viene rifiutata. Resta aperta la troncatura:
       nessuna firma può protestare per la propria assenza, serve un àncora esterna
+- [x] **Idempotenza per hash d'azione** — §4.3. Un'azione identica a quella immediatamente
+      precedente, **senza niente in mezzo**, non viene rieseguita: torna il risultato originale,
+      etichettato. Il discriminante è *cosa è successo in mezzo*, non il tempo, altrimenti il loop
+      edit → test → edit → stesso test si romperebbe. Due bug veri trovati dai test: `fs_write` è
+      classificato *reversible* ma cambia il file (non è una lettura), e l'hash deve coprire il
+      **contenuto**, che nel journal non entra — senza, la seconda scrittura sullo stesso path
+      spariva
 
 ### Prossime, ordinate
-- [ ] **Idempotenza per hash d'azione** *(giorni)* — §4.3
 - [ ] **H4 gate-freeze** via `cgroup.freeze` *(giorni ormai)* — il meccanismo è già verificato in
       `cgroups.mjs`, manca solo agganciarlo al gate
 - [ ] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** invece che in-process *(giorni)* —

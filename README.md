@@ -305,6 +305,17 @@ entry, recompute its hash, and recompute every hash after it. They cannot sign,
 and an unsigned entry sitting after a signed one is refused. What is still open
 is truncation — no signature can object to its own absence — and that needs an
 external anchor, which builds on this rather than replacing it.
+**The same effect, asked for twice, happens once.** Models re-emit tool calls — a
+duplicated `tool_use` block, a retry after a timeout the model could not tell
+from a failure, a plan replayed after a compaction. For a write that is
+harmless; for `curl -X POST /charge` it is a second charge. An action identical
+to the one immediately before it, **with nothing in between**, is not run again:
+the original result is handed back, labelled, with how to repeat it deliberately.
+The rule is *what happened in between*, not elapsed time, because the loop it
+must not break is edit → run the tests → edit → run the same tests — and that
+loop always has an edit between the two runs. Suppression is journalled like any
+other decision. `NEFERTARI_DEDUPE_MS=0` turns it off.
+
 **`working_set`.** The journal already records every file read, written and
 deleted. Replayed, it is the answer a resuming session actually needs — not
 "what is here" but **what moved while I was gone**: a file whose mtime is newer

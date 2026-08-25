@@ -25,6 +25,7 @@ import { runPlan } from "./plan.mjs";
 import { parseOcs, runOcs } from "./ocs.mjs";
 import { runTrajectories } from "./trajectories.mjs";
 import * as approvals from "./approvals.mjs";
+import * as dedupe from "./dedupe.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -59,12 +60,20 @@ const MAX_PENDING = Number(process.env.NEFERTARI_MAX_PENDING) || 25;
 
 // Broker front door: classify, gate, journal. Returns null to proceed,
 // or a pending_approval response the tool must return as-is.
-function gate(tool, args) {
+function gate(tool, args, fp) {
   idle.enter();
   // Real work has arrived: whatever was being prepared stops now. Speculation
   // that competed with the call it was preparing for would be worse than none.
   speculate.windowClose();
   const { class: cls, reason } = classify(tool, args);
+  // Idempotence by action hash. Before anything else decides what to do with
+  // this action, ask whether it already happened: the cheapest irreversible
+  // action is the one that does not run twice. Reads are exempt — see dedupe.mjs.
+  const dup = dedupe.check(tool, args, cls, fp);
+  if (dup) {
+    journal.append({ tool, args, class: cls, decision: "duplicate_suppressed", reason: dup.reason, ...idle.exit() });
+    return { gated: true, response: text(dup) };
+  }
   if (cls === CLASS.IRREVERSIBLE) {
     if (!approvals.consumeApproval(tool, args)) {
       const pend = approvals.listPending();
@@ -99,12 +108,14 @@ function gate(tool, args) {
   return { gated: false, cls, reason };
 }
 
-function record(tool, args, cls, outcome, extra = {}) {
+function record(tool, args, cls, outcome, extra = {}, fp) {
   // idle_ms is the inference window that preceded this call: the seconds the
   // machine had nothing to do while the model thought. Recorded per entry
   // because the journal is where anything richer can be computed from later,
   // and because a share nobody can recompute is a share nobody believes.
   journal.append({ tool, args, class: cls, decision: "executed", outcome, ...extra, ...idle.exit() });
+  // Remembered AFTER the fact, so an action that threw is not treated as done.
+  dedupe.remember(tool, args, cls, outcome, extra, fp);
   // The window opens here. The directory worth preparing is the one this action
   // just touched: the next expensive thing an agent does to a tree is almost
   // always to a tree it is already working in.
@@ -132,10 +143,13 @@ server.tool(
   "Write a file on the host. The previous content is snapshotted automatically; the result includes the snapshot_id for undo.",
   { path: z.string(), content: z.string() },
   async ({ path: p, content }) => {
-    const g = gate("fs_write", { path: p });
+    // The content is passed as identifying material, not as an argument: two
+    // writes of different content to the same path are different actions, but
+    // file content must not end up in the journal. See dedupe.mjs.
+    const g = gate("fs_write", { path: p }, { content });
     if (g.gated) return g.response;
     const r = ops.opFsWrite({ path: p, content });
-    record("fs_write", { path: p }, g.cls, "ok", r.meta);
+    record("fs_write", { path: p }, g.cls, "ok", r.meta, { content });
     return text(r.output);
   }
 );
