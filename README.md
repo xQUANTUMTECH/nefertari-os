@@ -322,6 +322,25 @@ deleted. Replayed, it is the answer a resuming session actually needs — not
 than the last action recorded against it was changed by someone else, and that
 is where a stale assumption is about to cost a wrong edit.
 
+**Waiting for something costs zero turns.** An agent that needs to know when a
+build finishes has one move today: poll. Sleep, look, reason about what it saw,
+sleep again — each cycle a full round trip, the whole context re-sent, to learn
+that the build is still running. `wait_for` moves the watching to the daemon,
+which is already between the agent and the machine and is not the thing being
+billed: the agent asks once and the call returns when the condition holds.
+Measured end to end: **one tool call covering a wait the daemon checked seven
+times.** Conditions are `path_exists`, `path_gone`, `path_changed`,
+`file_contains` and `command_succeeds` — and a command condition must be
+read-only, because a condition is evaluated on every poll and one with effects
+would perform them a hundred times over a long wait.
+
+Whether to freeze the agent while it waits is **not** the same question as at
+the gate, and confusing the two deadlocks it. A human is outside the tree by
+definition; a build started with `npm test &` is a child, inside it. So the
+tree is frozen only when it holds nothing but the agent itself, and the answer
+says which case it took. The test builds the deadlock deliberately to show the
+rule is not theoretical.
+
 **A goal waiting for a human costs nothing.** An irreversible action stops at
 the gate. Instead of handing the agent a *come back later* — which it answers
 by reasoning about being blocked, polling, and re-explaining itself after a

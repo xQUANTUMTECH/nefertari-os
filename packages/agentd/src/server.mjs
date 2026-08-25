@@ -27,6 +27,7 @@ import { runTrajectories } from "./trajectories.mjs";
 import * as approvals from "./approvals.mjs";
 import * as dedupe from "./dedupe.mjs";
 import * as gatefreeze from "./gatefreeze.mjs";
+import { waitFor, limits as waitLimits } from "./waitfor.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -426,6 +427,45 @@ server.tool(
     const v = journal.verify();
     record("journal_verify", {}, g.cls, v.ok ? `intact (${v.checked} entries, ${v.unsigned} unsigned)` : `BROKEN at line ${v.broken.line}`);
     return text(v);
+  }
+);
+
+server.tool(
+  "wait_for",
+  "Wait until something becomes true, instead of polling for it. The daemon watches and the call does not return until the condition holds or the budget runs out — so a ten-minute wait costs ZERO turns rather than one per check. Use it whenever the next useful thing depends on something you did not just do: a build or test run finishing, a file appearing, a log line showing up, a deploy settling. The condition must be side-effect free (a command condition must be read-only) because it is evaluated on every poll. Returns whether it held, how long it waited, and how many times it looked.",
+  {
+    type: z
+      .enum(["path_exists", "path_gone", "path_changed", "file_contains", "command_succeeds"])
+      .describe("path_changed means changed since THIS call, not at some point in the past"),
+    path: z.string().optional().describe("For path_* and file_contains"),
+    pattern: z.string().optional().describe("Regular expression, for file_contains. Only the last 64KB of the file is searched"),
+    command: z.string().optional().describe("For command_succeeds: exit 0 means the condition holds. Must be read-only"),
+    cwd: z.string().optional().describe("Working directory for command_succeeds"),
+    timeout_ms: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe(`How long to wait (default ${waitLimits.DEFAULT_MS}, capped at ${waitLimits.MAX_MS})`),
+    poll_ms: z.number().int().min(100).optional().describe("How often to look (default 500)"),
+  },
+  async ({ type, path: p, pattern, command, cwd, timeout_ms, poll_ms }) => {
+    const args = { type, path: p, pattern, command, cwd };
+    const g = await gate("wait_for", args);
+    if (g.gated) return g.response;
+    const r = await waitFor(args, { timeoutMs: timeout_ms, pollMs: poll_ms });
+    if (r.error) {
+      record("wait_for", args, g.cls, `refused: ${r.error}`);
+      return text({ status: "refused", reason: r.error });
+    }
+    record(
+      "wait_for",
+      args,
+      g.cls,
+      r.satisfied ? `satisfied after ${r.waited_ms}ms` : `timed out after ${r.waited_ms}ms`,
+      { waited_ms: r.waited_ms, polls: r.polls, frozen: r.frozen }
+    );
+    return text(r);
   }
 );
 

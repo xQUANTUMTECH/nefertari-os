@@ -57,6 +57,7 @@ const READ_ONLY = new Set([
   "timeline_list",
   "sys_status",
   "egress_check",
+  "wait_for",
 ]);
 
 // `shell` is the exception the set cannot express: whether it changed anything

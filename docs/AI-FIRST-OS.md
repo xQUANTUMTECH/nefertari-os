@@ -344,6 +344,16 @@ init proprio (systemd resta).
       impedisce di riscrivere il registro da capo. Un falsario può ricalcolare ogni hash, non può
       firmare, e una entry non firmata dopo una firmata viene rifiutata. Resta aperta la troncatura:
       nessuna firma può protestare per la propria assenza, serve un àncora esterna
+- [x] **`wait_for(condizione)`** — svegliarsi su evento, non su orario. Il demone guarda al posto
+      dell'agente e la chiamata non torna finché la condizione non regge. *Numero: una attesa
+      coperta da **1 sola tool call**, 7 poll fatti dal demone che l'agente non ha mai visto —
+      da N turni di polling a ZERO.* Condizioni: `path_exists`, `path_gone`, `path_changed`,
+      `file_contains`, `command_succeeds` (solo read-only: una condizione viene valutata a ogni
+      poll, una con effetti li produrrebbe cento volte).
+      **La regola non ovvia:** congelare l'albero è giusto al gate umano e SBAGLIATO qui — chi
+      produce la condizione è spesso un figlio dell'agente (`npm test &`), e congelarlo è un
+      deadlock travestito da timeout. Si congela solo se nell'albero non c'è nient'altro che
+      l'agente; il test costruisce apposta il deadlock per dimostrare che la regola serve
 - [x] **H4 gate-freeze** — §4.4/H4. L'azione parcheggiata al gate non restituisce più *"torna
       dopo"*: il demone trattiene la risposta e **congela l'albero dell'agente**, poi la scongela
       e la esegue quando l'umano approva. *Numero:* con il gate aperto un figlio che gira brucia
@@ -364,9 +374,6 @@ init proprio (systemd resta).
 ### Prossime, ordinate
 - [ ] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** invece che in-process *(giorni)* —
       la macchina c'è, deve solo guadagnarselo
-- [ ] **`wait_for(condizione)`** *(1–2 settimane)* — svegliarsi su evento, non su orario. Unifica
-      self-wake, scheduling e processo sospendibile. *Numero: agente in attesa di una CI da 10 min,
-      da N turni di polling a ZERO*
 - [ ] **Lease manager su URI esterni** *(1–2 settimane)* — §4.5
 - [ ] **Scheduler a budget token** *(2 settimane)* — §4.2
 - [ ] **H2 fork overlayfs + upper tmpfs** *(2–3 settimane)* — sblocca anche gli errori con write-set

@@ -203,6 +203,9 @@ export function classify(tool, args) {
     case "sys_status":
     case "journal_tail":
     case "pending_list":
+    // Watching is not doing. The condition itself is classified separately
+    // and refused unless it is read-only — see waitfor.mjs.
+    case "wait_for":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
       return isSensitivePath(args.path)
