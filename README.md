@@ -224,6 +224,48 @@ egress stays the broker's job (use the `landrun`/`custom` drivers if you need
 kernel-level network rules too). If the selected driver is unavailable, agentd
 fails open to plain `bash` unless `NEFERTARI_ENFORCE=1` forces fail-closed.
 
+## Confining the agent itself
+
+Everything above holds for what goes THROUGH the broker. An agent that opens its
+own shell was not seen at all — so until this existed, "physics, not convention"
+described the tools rather than the agent, and the guarantee was circular.
+
+```bash
+nefertari mcp-socket /run/nefertari.sock &
+nefertari run --workspace ./project --deny-read ~/.aws --deny-read ~/.ssh -- claude
+```
+
+The agent starts inside a Landlock sandbox where **the workspace is read-only**.
+Its only way to change anything there is to ask the daemon — which is reachable
+because it is no longer its child. Both halves are needed and both are tested:
+the first alone is a sandbox, the second alone is a convention.
+
+| | |
+|---|---|
+| cannot write the workspace directly | verified on the filesystem |
+| cannot widen its own sandbox | Landlock does not relax, from inside or out |
+| **can** change it by asking the daemon | verified on the filesystem |
+| and that change is in the journal | the only door left open is the recorded one |
+
+**Reads are the other half, and the half that matters for secrets.** Confining
+writes protects the machine and does nothing for a credential: a confined agent
+cannot write `~/.aws` and reads it without difficulty — and everything an agent
+reads is sent to a third-party API on its next turn. `--deny-read` makes a path
+unreadable, so the only way to use a credential is to have the daemon use it on
+the agent's behalf.
+
+Landlock is allow-only, so a deny-list is expressed as its complement: walk down
+from `/` along the ancestors of each denied path, granting every sibling
+wholesale and recursing only where the path continues. The denial is surgical —
+the agent's own config, the binaries it runs and the workspace it reads all stay
+available.
+
+Why the daemon has to be a service rather than a child: Landlock restrictions
+are inherited and cannot be relaxed, so a daemon spawned by a confined agent
+would lose the ability to write the very snapshots and journal that make the
+arrangement worth anything. `mcp-socket` is that separation. The socket is the
+boundary, so its permissions are the ACL: 0600, owner only.
+
 ## Driving it from your own loop
 
 Nothing here is specific to one client. `agentd` is an MCP server over stdio, so

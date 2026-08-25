@@ -312,6 +312,18 @@ init proprio (systemd resta).
 
 ## 7. Task, in ordine di costo
 
+### Fatto il 25 agosto 2026
+- [x] **`mcp-socket`**: il demone è un servizio a cui l'agente si connette, non un processo che
+      possiede — `fc06561`. Sbloccava tutto il resto: Landlock si eredita, quindi finché `agentd` era
+      figlio dell'agente, confinarlo avrebbe confinato anche il broker
+- [x] **`nefertari run`**: l'agente parte confinato, workspace in sola lettura — `74f87af`. **Chiude
+      il cerchio logico**: "fisica, non convenzione" ora descrive l'agente, non i tool
+- [x] **`--deny-read` nell'enforcer** — `06bd842`. Confinare le scritture non protegge un segreto:
+      verificato che un agente confinato legge `~/.aws` senza difficoltà. Landlock è allow-only,
+      quindi la deny-list è espressa come complemento
+- [x] `docs/BENCHMARK.md` con metodo, numeri e dati grezzi — `1f2d250`
+- [x] **Confronto con dsh eseguito**, non più solo dichiarato — `1f2d250`
+
 ### Fatto il 24 agosto 2026
 - [x] Immagine Docker che porta l'enforcer (era fail-open silenzioso) — `db0fdc5`
 - [x] Timeline: symlink preservati, fork che raggiunge le dipendenze — `7056fe3`
@@ -322,18 +334,25 @@ init proprio (systemd resta).
 - [x] Benchmark a N=5 su tre modelli economici
 - [x] **`localmodel.mjs` + `egress.mjs`**: tier locale plugabile (llama.cpp / LM Studio / vLLM /
       llamafile / Ollama / qualunque HTTP) e confine del contesto su `fs_read` e output shell
+- [x] **Hash-chain del journal** — `f566519`. Un agente non può testimoniare, quindi il registro deve
+- [x] **`idle.mjs`**: la finestra di inferenza misurata — `3b97927`. **99–100% su un run reale**
+- [x] **`cgroups.mjs`** + una cgroup per comando — `d0dbba1`, `6e011a3`. Freeze e `cpu.idle` verificati
+- [x] **`inferd.mjs`**: supervisione dell'inferenza locale — `c343e10`. Congelata: **0 µs su 700 ms**
+- [x] **`speculate.mjs`**: il checkpoint fatto nella finestra di idle — `c1ad1c6`.
+      **103 ms a freddo → 9 ms preparato**, e sette test su otto sono di correttezza
 
 ### Prossime, ordinate
-- [ ] **Confinare l'agente stesso** con Landlock, non solo i comandi che esegue *(giorni)* — oggi
-      l'agente aggira il broker lanciando una bash, quindi "fisica non convenzione" è circolare
-- [ ] **Hash-chain del journal** + firma Ed25519 *(giorni)* — §4.4
+- [ ] **Firma Ed25519 sopra la catena di hash** *(giorni)* — §4.4. La catena rende visibile la
+      manomissione; la firma è ciò che impedisce di riscriverla da capo
 - [ ] **Idempotenza per hash d'azione** *(giorni)* — §4.3
-- [ ] **H4 gate-freeze** via `cgroup.freeze` *(1 settimana)*
+- [ ] **H4 gate-freeze** via `cgroup.freeze` *(giorni ormai)* — il meccanismo è già verificato in
+      `cgroups.mjs`, manca solo agganciarlo al gate
+- [ ] **Pre-lavoro speculativo in un figlio sotto `cpu.idle`** invece che in-process *(giorni)* —
+      la macchina c'è, deve solo guadagnarselo
 - [ ] **`wait_for(condizione)`** *(1–2 settimane)* — svegliarsi su evento, non su orario. Unifica
       self-wake, scheduling e processo sospendibile. *Numero: agente in attesa di una CI da 10 min,
       da N turni di polling a ZERO*
 - [ ] **Lease manager su URI esterni** *(1–2 settimane)* — §4.5
-- [ ] **H1 inference-window scheduling** *(1–2 settimane)* — misurare la finestra prima di usarla
 - [ ] **Scheduler a budget token** *(2 settimane)* — §4.2
 - [ ] **H2 fork overlayfs + upper tmpfs** *(2–3 settimane)* — sblocca anche gli errori con write-set
 - [ ] **Contesto virtuale**: handle + fault-in + budget, con il modello locale come pager *(§3)*
@@ -351,9 +370,6 @@ init proprio (systemd resta).
 - [ ] **Modulo NixOS / immagine OSTree** — possedere il boot
 
 ### Da fare comunque, indipendenti
-- [ ] `docs/BENCHMARK.md` con metodo, tabelle e dati grezzi linkabili
-- [ ] Eseguire `examples/bench-dsh.mjs` — scritto, mai lanciato. **Finché non gira non si può dire di
-      battere dsh**
-- [ ] Togliere "The first" dal README
+- [x] `docs/BENCHMARK.md` · confronto dsh eseguito · "The first" tolto dal README
 - [ ] Esempio LangChain da ~50 righe via `langchain-mcp-adapters` — dimostra che qualunque framework
       lo pilota, a costo quasi zero

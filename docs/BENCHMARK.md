@@ -3,6 +3,11 @@
 What three execution primitives are worth, measured on cheap models, with the
 verdict read from the filesystem rather than from the model's account of itself.
 
+> **Measured 24 August 2026.** Bench A and B at `2aa1851`, the idle share at `3b97927`, the dsh
+> comparison at `1f2d250`. Speculative pre-checkpointing (`c1ad1c6`) and the agent confinement
+> (`74f87af`, `06bd842`) landed afterwards and have **not** been re-measured end to end — a benchmark
+> that does not name its build stops meaning anything the moment the build moves.
+>
 > Raw data: [`packages/agentd/examples/bench-results.json`](../packages/agentd/examples/bench-results.json) ·
 > per-cell medians: `bench-summary.json` · harness:
 > [`bench-on-nefertari.mjs`](../packages/agentd/examples/bench-on-nefertari.mjs),
