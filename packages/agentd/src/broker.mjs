@@ -213,6 +213,7 @@ export function classify(tool, args) {
     case "recall":
     case "journal_query":
     case "memory_search":
+    case "secret_list":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
       return isSensitivePath(args.path)
@@ -227,6 +228,16 @@ export function classify(tool, args) {
     // read either: it writes into the meter the operator is watching.
     case "budget_report":
       return { class: CLASS.NOISY, reason: "records the client's own account of what it spent" };
+    // A request the broker signs on the agent's behalf. Irreversible by
+    // default: it acts as an identity the agent does not hold, and the
+    // agent cannot see what it is spending. GET and HEAD are the exception
+    // — reading as an identity is not the same as acting as one.
+    case "http_as": {
+      const m = String(args?.method || "GET").toUpperCase();
+      return m === "GET" || m === "HEAD"
+        ? { class: CLASS.NOISY, reason: "reads a remote resource as a stored identity" }
+        : { class: CLASS.IRREVERSIBLE, reason: `${m} to a remote service as a stored identity — the effect is somebody else's system` };
+    }
     // it is a note in a table saying who intends to. Notified rather than
     // silent, because who holds what is exactly the kind of thing a human
     // wants to see when two agents are running.

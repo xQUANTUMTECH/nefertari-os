@@ -33,6 +33,7 @@ import * as budget from "./budget.mjs";
 import * as vctx from "./context.mjs";
 import { recall } from "./recall.mjs";
 import * as retrieval from "./retrieval.mjs";
+import * as secrets from "./secrets.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -735,6 +736,93 @@ server.tool(
       );
     }
     return text(r, "memory_search");
+  }
+);
+
+server.tool(
+  "secret_list",
+  "The identities you can act AS, and what each one may be used against. You never see a credential — there is no tool that returns one, deliberately, because everything you read is sent to a model on your next turn, so a secret in your context is already exfiltrated. Knowing the NAME is safe precisely because each identity is scoped to specific hosts and the scope is enforced before any request leaves.",
+  {},
+  async () => {
+    const g = await gate("secret_list", {});
+    if (g.gated) return g.response;
+    const all = secrets.list();
+    record("secret_list", {}, g.cls, `${all.length} identities`);
+    return text(
+      {
+        identities: all,
+        how: 'http_as({ identity: "name", method: "GET", url: "https://..." })',
+        note: "A human adds these with `nefertari secret add <name> --host <host>`, reading the value from stdin. There is no tool for it.",
+      },
+      "secret_list"
+    );
+  }
+);
+
+server.tool(
+  "http_as",
+  "Make an HTTP request AS a stored identity, without ever seeing its credential. The daemon attaches it downstream of you, at the point the request leaves — the same shape as a cloud instance metadata service: the machine holds the identity, the process does not. The request is refused if the identity is not scoped to that host, or if the URL is plaintext. Anything in the response that matches a stored credential is redacted before you see it, because an API that echoes its own Authorization header would otherwise hand you what all of this kept out.",
+  {
+    identity: z.string().describe("Name from secret_list"),
+    url: z.string().describe("Full https URL. Must be within the identity's scope"),
+    method: z.string().optional().describe("GET (default), POST, PUT, PATCH, DELETE, HEAD"),
+    body: z.string().optional(),
+    headers: z.record(z.string()).optional().describe("Extra headers. The credential header is set by the daemon and cannot be overridden here"),
+  },
+  async ({ identity, url, method, body, headers }) => {
+    const m = String(method || "GET").toUpperCase();
+    const args = { identity, url, method: m };
+    const g = await gate("http_as", args);
+    if (g.gated) return g.response;
+
+    const allowed = secrets.allowedFor(identity, url);
+    if (!allowed.ok) {
+      record("http_as", args, g.cls, `refused: ${allowed.reason}`);
+      return text({ status: "refused", reason: allowed.reason }, "http_as");
+    }
+    const att = secrets.attach(identity, headers || {});
+    if (!att.ok) {
+      record("http_as", args, g.cls, `refused: ${att.reason}`);
+      return text({ status: "refused", reason: att.reason }, "http_as");
+    }
+
+    let res, bodyText;
+    try {
+      res = await globalThis.fetch(url, {
+        method: m,
+        headers: { "user-agent": "nefertari-agentd", ...att.headers },
+        body: m === "GET" || m === "HEAD" ? undefined : body,
+        signal: AbortSignal.timeout(30000),
+      });
+      bodyText = await res.text();
+    } catch (e) {
+      record("http_as", args, g.cls, `failed: ${e.message}`);
+      return text({ status: "failed", reason: String(e.message) }, "http_as");
+    }
+
+    // Scanned on the way back. An API that quotes the request in an error,
+    // or a debug endpoint that reflects its headers, would otherwise put the
+    // credential in the context by the front door.
+    const clean = secrets.redact(bodyText);
+    record(
+      "http_as",
+      args,
+      g.cls,
+      `${m} ${allowed.host} → ${res.status}`,
+      // The identity used is recorded. The value is not, anywhere.
+      { identity, status: res.status, redacted: clean.redacted || undefined }
+    );
+    return text(
+      {
+        status: res.status,
+        ok: res.ok,
+        as: identity,
+        redacted: clean.redacted ? `${clean.redacted} occurrence(s) of a stored credential removed from this response` : undefined,
+        body: clean.text,
+      },
+      "http_as",
+      args
+    );
   }
 );
 

@@ -376,6 +376,25 @@ init proprio (systemd resta).
       spiegarsi e restituire resta permesso.
       Resta aperta la **prelazione fra goal** di §4.2: qui c'è il contatore e il limite, non ancora
       lo scheduler che toglie quota a un goal per darla a un altro
+- [x] **Secret broker: identità che l'agente usa e non vede** — §4.1, la voce che il documento
+      indicava come valore/sforzo più alto. L'agente dice *"chiama X come identità Y"* e il demone
+      attacca la credenziale **a valle**, al punto di egress: stessa forma dell'instance metadata
+      service di AWS — la macchina ha l'identità, il processo no. Un segreto che entra nel contesto
+      è esfiltrato **per architettura**, non per attacco, quindi non ci entra mai.
+      **Quattro porte chiuse, una per riga:** (1) nessun tool lo restituisce — né intero, né un
+      prefisso, né la lunghezza: chi può chiedere *quanto è lungo* può chiedere 200 volte; (2) non
+      finisce nel journal, che è il file fatto apposta per essere riletto da altri; (3) non passa
+      mai da argv — `nefertari secret add` legge da **stdin**, perché una riga di comando finisce
+      nella history, in `ps`, e nel registro di questo stesso demone; (4) ogni identità è **scopata
+      a degli host** e lo scope è verificato *prima* che la richiesta parta — è quello che rende
+      sicuro conoscerne il **nome**.
+      **E la risposta viene scansionata al ritorno:** un'API che rimanda indietro il proprio header
+      `Authorization` consegnerebbe dal portone quello che tutto il resto ha tenuto fuori. Il test
+      usa un servizio che riflette apposta, e verifica che su **ogni byte** che l'agente ha
+      ricevuto la credenziale compaia **zero volte**.
+      **Limite dichiarato:** la radice di fiducia è un file 0600, non un keyring del kernel né un
+      TPM. Qualunque cosa giri come questo utente lo legge. Quello che compra oggi è che *l'agente*
+      no — gira confinato, il demone no, e `--deny-read` glielo rende illeggibile comunque
 - [x] **Seam di retrieval: `memory_search`** — memoria per significato come **driver opzionale**. Il
       motore sta fuori dal repository ed è libero di essere commerciale; aperti restano il contratto
       (due chiamate: `/index`, `/search`), la policy e il driver nullo. Senza motore non cambia nulla.
@@ -614,7 +633,6 @@ modello locale, che è l'unico modo di riassumere senza spedire.
       primitivo per computer use e robotica *(§3-bis)*
 - [ ] **Inferenza embedded** (llama.cpp come libreria nel supervisor Rust) al posto dei driver HTTP
       come default *(§3)*
-- [ ] **Secret broker con egress proxy** *(3–4 settimane)* — §4.1, il valore/sforzo più alto
 - [ ] **Postcondizioni (T6) e webhook** — un piano che ritenta o devia senza tornare al modello
 - [ ] **Supervisor privilegiato in Rust** + **BPF LSM** (via Aya) — la radice di fiducia
 - [ ] **Modulo NixOS / immagine OSTree** — possedere il boot

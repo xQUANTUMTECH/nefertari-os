@@ -4,6 +4,8 @@
 import * as approvals from "./approvals.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as journal from "./journal.mjs";
+import * as secrets from "./secrets.mjs";
+import fs from "node:fs";
 
 const [, , cmd, ...rest] = process.argv;
 
@@ -20,6 +22,49 @@ switch (cmd) {
       print(`  reason: ${i.reason}`);
       print(`  args:   ${JSON.stringify(i.args)}`);
       print(`  since:  ${i.createdAt}`);
+    }
+    break;
+  }
+  // Identities live here and nowhere else. Reading the value from stdin is
+  // not fussiness: a command line lands in shell history, in `ps` output,
+  // and in this daemon's own record of what commands ran.
+  case "secret": {
+    const [sub, name, ...opts] = rest;
+    if (sub === "add") {
+      const hosts = [];
+      let ttlMs = null;
+      let header = "Authorization";
+      let scheme = "Bearer";
+      let note = "";
+      for (let i = 0; i < opts.length; i++) {
+        if (opts[i] === "--host") hosts.push(opts[++i]);
+        else if (opts[i] === "--ttl-hours") ttlMs = Number(opts[++i]) * 3600000;
+        else if (opts[i] === "--header") header = opts[++i];
+        else if (opts[i] === "--scheme") scheme = opts[++i];
+        else if (opts[i] === "--note") note = opts[++i];
+      }
+      const value = fs.readFileSync(0, "utf8").trim();
+      const r = secrets.put({ name, value, hosts, header, scheme, ttlMs, note });
+      if (!r.ok) {
+        print(`refused: ${r.reason}`);
+        process.exitCode = 1;
+        break;
+      }
+      print(`identity ${r.name} stored for ${r.hosts.join(", ")}${r.expires_at ? `, expires ${r.expires_at}` : ""}`);
+      print("the value is not printed, not journalled, and no tool can read it back.");
+      break;
+    }
+    if (sub === "rm") {
+      const r = secrets.remove(name);
+      print(r.ok ? `removed ${r.removed}` : r.reason);
+      break;
+    }
+    const all = secrets.list();
+    if (!all.length) print("No identities stored.");
+    for (const i of all) {
+      print(`\n${i.name} → ${i.hosts.join(", ")}`);
+      print(`  header: ${i.header}${i.note ? ` · ${i.note}` : ""}`);
+      print(`  since:  ${i.added_at}${i.expires_at ? ` · expires ${i.expires_at}` : ""}`);
     }
     break;
   }

@@ -65,6 +65,7 @@ const READ_ONLY = new Set([
   "recall",
   "journal_query",
   "memory_search",
+  "secret_list",
 ]);
 
 // `shell` is the exception the set cannot express: whether it changed anything

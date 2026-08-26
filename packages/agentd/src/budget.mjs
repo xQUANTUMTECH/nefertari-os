@@ -67,6 +67,7 @@ const WIND_DOWN = new Set([
   "journal_tail",
   "journal_query",
   "memory_search",
+  "secret_list",
   "journal_verify",
   "pending_list",
   "lease_list",

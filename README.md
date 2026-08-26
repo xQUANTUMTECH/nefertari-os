@@ -399,6 +399,29 @@ What it deliberately does not do is answer by meaning. *"What did we decide
 about the parser?"* is retrieval, not filtering — that is the slot NexusDB
 fills, and the shape here is built to receive it: queries return pointers, so
 
+**Identities the agent uses and never sees.** A secret that reaches an agent's
+context is exfiltrated by *architecture*, not by attack — everything it reads
+goes to a model on the next turn. So it never gets there: the agent says *call
+this service as identity X* and the daemon attaches the credential downstream,
+at the point the request leaves. The prior art is exact and has worked for
+years — a cloud instance metadata service: the machine holds the identity, the
+process does not.
+
+No tool returns a credential, not even its length. It is never journalled, and
+never passes through argv — `nefertari secret add` reads from stdin, because a
+command line lands in shell history, in `ps`, and in this daemon's own record.
+Each identity is **scoped to hosts**, checked before the request leaves, which
+is what makes knowing a name harmless: pointed at `github.com.evil.tld`, the
+identity is refused rather than attached. And the response is scanned on the
+way back, because an API that echoes its own `Authorization` header would hand
+over what all of that kept out. The test proves the whole of it at once: across
+every byte the agent received, the credential appears **zero times**.
+
+Stated plainly, because it matters: the root of trust is a file with 0600 on
+it, not a kernel keyring or a TPM. Anything running as this user can read it.
+What it buys today is that the *agent* cannot — it runs confined, the daemon
+does not, and `--deny-read` makes the store unreadable to it in any case.
+
 **Memory by meaning is a driver, not a dependency.** `memory_search` answers
 the questions no pattern will — *what did we decide about the parser* — by
 handing the paged store to a retrieval engine and getting handles back. The
