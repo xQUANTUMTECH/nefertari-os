@@ -376,6 +376,16 @@ init proprio (systemd resta).
       spiegarsi e restituire resta permesso.
       Resta aperta la **prelazione fra goal** di §4.2: qui c'è il contatore e il limite, non ancora
       lo scheduler che toglie quota a un goal per darla a un altro
+- [x] **Vista operatore su HTTP** — dare a un'IA il controllo completo si difende solo se qualcuno
+      può **vedere**, e vedere dal registro, non dal resoconto che l'agente dà di sé. Una chiamata
+      dice cosa il kernel sta davvero applicando *qui*, cosa aspetta un umano, cosa ha fatto (a
+      conteggi), quanto è piena la finestra, cosa tiene e da dove, quali identità esistono, quali
+      risorse esterne sono in lease. `/journal` prende gli stessi filtri di `journal_query`.
+      Pagina servita **senza** token, dati **con**: così l'URL è condivisibile. Lo status non porta
+      **nessun valore di credenziale** — è l'endpoint che più facilmente finisce dietro un link
+      incollato in chat. E bindare fuori da loopback con un token generato viene **rifiutato**: il
+      token finirebbe dentro un container che nessuno da fuori può leggere — una porta chiusa a
+      chiave con la chiave dentro.
 - [x] **Secret broker: identità che l'agente usa e non vede** — §4.1, la voce che il documento
       indicava come valore/sforzo più alto. L'agente dice *"chiama X come identità Y"* e il demone
       attacca la credenziale **a valle**, al punto di egress: stessa forma dell'instance metadata

@@ -399,6 +399,23 @@ What it deliberately does not do is answer by meaning. *"What did we decide
 about the parser?"* is retrieval, not filtering — that is the slot NexusDB
 fills, and the shape here is built to receive it: queries return pointers, so
 
+**And an operator can watch it from outside the machine.** Handing an AI full
+control is only defensible if someone can see what it did — and see it from
+the record rather than from the agent's account of itself. One authenticated
+call answers what the kernel is actually enforcing here, what is waiting for a
+human, what the agent has been doing as counts, how full its window is, what
+it holds and from where, which identities exist and which external resources
+are leased. `/journal` takes the same filters as `journal_query`, so the
+question is *show me every gate* rather than *show me 500 entries*.
+
+The page is served without a token and the data is not, so the URL is safe to
+bookmark. The status carries **no credential values** — identity names and
+scopes only — because this is the endpoint most likely to end up behind a link
+someone pastes into a chat. And binding it beyond loopback with a generated
+token is refused rather than started: the token would be written inside a
+container nobody outside can read, which is a locked door with the key on the
+wrong side.
+
 **Identities the agent uses and never sees.** A secret that reaches an agent's
 context is exfiltrated by *architecture*, not by attack — everything it reads
 goes to a model on the next turn. So it never gets there: the agent says *call

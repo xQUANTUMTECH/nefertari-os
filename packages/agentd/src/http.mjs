@@ -19,6 +19,9 @@
 //   POST /pending/:id/approve   → approved entry
 //   POST /pending/:id/deny      → denied entry
 //   GET  /journal?n=50          → last n journal entries
+//   GET  /journal?tool=&decision=&contains=&count=1  → the record, queried
+//   GET  /status                → everything an operator needs to watch it
+//   GET  /                      → the operator page (no auth: it asks for the token)
 
 import http from "node:http";
 import fs from "node:fs";
@@ -27,6 +30,7 @@ import crypto from "node:crypto";
 import { HOME, ensureHome } from "./paths.mjs";
 import * as approvals from "./approvals.mjs";
 import * as journal from "./journal.mjs";
+import { status as consoleStatus, PAGE } from "./console.mjs";
 
 const TOKEN_FILE = path.join(HOME, "token");
 
@@ -57,6 +61,13 @@ export function createServer({ token }) {
     const url = new URL(req.url, "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean);
 
+    // The page itself carries nothing: it asks for the token and calls the
+    // same authenticated routes as anyone else. Serving it unauthenticated
+    // is what makes the URL safe to bookmark.
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/console")) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      return res.end(PAGE);
+    }
     if (req.method === "GET" && url.pathname === "/health") {
       return send(res, 200, { ok: true, pending: approvals.listPending().length });
     }
@@ -78,7 +89,23 @@ export function createServer({ token }) {
         journal.append({ id: entry.id, tool: entry.tool, args: entry.args, decision: "human_denied", via: "http" });
         return send(res, 200, entry);
       }
+      if (req.method === "GET" && url.pathname === "/status") {
+        return send(res, 200, consoleStatus());
+      }
       if (req.method === "GET" && url.pathname === "/journal") {
+        // A filter turns the same route into the question an operator
+        // actually has — "show me every gate" rather than "show me 500
+        // entries and let me look".
+        const q = ["tool", "decision", "contains", "since", "until"].reduce((a, k) => {
+          const v = url.searchParams.get(k);
+          if (v) a[k] = v;
+          return a;
+        }, {});
+        if (url.searchParams.get("count")) q.count = true;
+        if (Object.keys(q).length) {
+          q.limit = Math.min(Number(url.searchParams.get("n")) || 20, 100);
+          return send(res, 200, journal.query(q));
+        }
         const n = Math.min(Number(url.searchParams.get("n")) || 50, 500);
         return send(res, 200, journal.tail(n));
       }
@@ -93,6 +120,19 @@ export function serve() {
   const token = loadOrCreateToken();
   const host = process.env.NEFERTARI_HTTP_HOST || "127.0.0.1";
   const port = Number(process.env.NEFERTARI_HTTP_PORT) || 7343;
+
+  // Binding beyond loopback with a GENERATED token is a trap: the token is
+  // written inside a container the operator cannot read, so the endpoint is
+  // public and nobody can use it — including whoever is meant to approve the
+  // gate. Refusing is kinder than starting and being useless.
+  const loopback = /^(127\.|localhost$|::1$|\[::1\]$)/.test(host);
+  if (!loopback && !process.env.NEFERTARI_TOKEN) {
+    console.error(
+      `refusing to bind ${host}: NEFERTARI_TOKEN is not set, so the token would be generated inside this\n` +
+        `machine and nobody outside could read it. Set NEFERTARI_TOKEN, or bind 127.0.0.1.`
+    );
+    process.exit(2);
+  }
   createServer({ token }).listen(port, host, () => {
     console.log(`nefertari approval API on http://${host}:${port}`);
     console.log(process.env.NEFERTARI_TOKEN ? "token: from NEFERTARI_TOKEN" : `token: ${TOKEN_FILE}`);
