@@ -1,0 +1,26 @@
+{
+  "name": "nefertari-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A system layer for AI agents: kernel-enforced reversibility, a signed append-only journal, forkable time, and a context pager that survives compaction.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xQUANTUMTECH/nefertari-os.git"
+  },
+  "workspaces": [
+    "packages/agentd"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node packages/agentd/src/server.mjs",
+    "cli": "node packages/agentd/src/cli.mjs",
+    "test": "bash packages/agentd/test/run-all.sh",
+    "test:docker": "docker run --rm -v \"$PWD:/repo\" -w /repo/packages/agentd --entrypoint /bin/sh nefertari-agentd:enforce-test -c 'bash test/run-all.sh'",
+    "test:full": "docker run --rm --privileged --cgroupns=private --user root -v \"$PWD:/repo\" -w /repo/packages/agentd --entrypoint /bin/sh nefertari-agentd:enforce-test -c 'sh test/cgroup-delegate.sh && bash test/run-all.sh'",
+    "image": "docker build -t nefertari-agentd:enforce-test packages/agentd",
+    "enforce": "cargo build --release --manifest-path packages/enforce/Cargo.toml"
+  }
+}

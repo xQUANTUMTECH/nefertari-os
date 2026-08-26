@@ -9,6 +9,29 @@
 > Numbers: [docs/BENCHMARK.md](docs/BENCHMARK.md) — measured on cheap models, verdict read from the filesystem.  
 > Thesis: [docs/VISION.md](docs/VISION.md) · Proportionality: [docs/PROPORTIONALITY.md](docs/PROPORTIONALITY.md) · Neural tissue (NexusDB/Hebbian): [docs/NEURAL-LAYER-NEXUSDB.md](docs/NEURAL-LAYER-NEXUSDB.md)
 
+## Where the code is
+
+The daemon is three directories down, which is not obvious from the repository root.
+
+```
+packages/agentd/src/        6 677 lines · 34 files   the daemon: broker, journal, pager, timeline
+packages/agentd/test/       4 481 lines · 30 files   one file per claim; every number below comes from here
+packages/agentd/examples/   1 994 lines             real agents driving it, plus the benchmark harnesses
+packages/enforce/src/         207 lines rust        the Landlock wrapper: the part the kernel enforces
+docs/                       1 853 lines             design, benchmarks, the open questions
+```
+
+Start with [`packages/agentd/src/server.mjs`](packages/agentd/src/server.mjs) for the tool surface, or
+[`packages/agentd/src/broker.mjs`](packages/agentd/src/broker.mjs) for the classification every action passes
+through. Each source file opens with why it exists and what it refused to do.
+
+```bash
+npm install                 # workspaces: packages/agentd
+npm run image               # build the test container (Landlock enforcer inside)
+npm test                    # 30 test files — skips kernel proofs off Linux, with reasons
+npm run test:full           # the same suite with cgroup v2 delegated: nothing skipped
+```
+
 ## The thesis
 
 Every OS assumes its caller has persistent memory, near-zero cost per action, and always-on eyes. An AI agent is the exact opposite: amnesia every session, an expensive model inference per tool call, and vision limited to what it asks for. That mismatch taxes every autonomous run — re-orientation probes, one model turn per step, recomputation, single-path trial-and-error. Multiply it by a **team of agents** on one host and the taxes compound.

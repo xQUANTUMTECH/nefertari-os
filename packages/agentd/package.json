@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node src/server.mjs",
-    "cli": "node src/cli.mjs"
+    "cli": "node src/cli.mjs",
+    "test": "bash test/run-all.sh"
   },
   "engines": {
     "node": ">=20"
@@ -17,5 +18,10 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "zod": "^3.24.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xQUANTUMTECH/nefertari-os.git",
+    "directory": "packages/agentd"
+  }
 }
