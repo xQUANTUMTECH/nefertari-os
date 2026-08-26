@@ -32,6 +32,7 @@ import * as leases from "./leases.mjs";
 import * as budget from "./budget.mjs";
 import * as vctx from "./context.mjs";
 import { recall } from "./recall.mjs";
+import * as retrieval from "./retrieval.mjs";
 import { HOME, ensureHome } from "./paths.mjs";
 
 // Wire shapes for plan steps: flat, nested, or a JSON string of either. The
@@ -700,6 +701,40 @@ server.tool(
     const r = journal.query(args);
     record("journal_query", args, g.cls, r.error ? `refused: ${r.error}` : `${r.matched} matched of ${r.scanned} scanned`);
     return text(r, "journal_query");
+  }
+);
+
+server.tool(
+  "memory_search",
+  "Search what this daemon holds BY MEANING rather than by filter — for questions like \"what did we decide about the parser\" that no pattern will find. Optional: it needs a retrieval engine configured on this host, and without one it says so and you fall back to journal_query. Results are handles, never content: fetch what looks right with context_fetch. Anything that came from outside this machine comes back labelled, because retrieval must not strip a trust label off content by lifting it out of its context.",
+  {
+    query: z.string().describe("What you are trying to remember, in your own words"),
+    limit: z.number().int().min(1).max(30).optional().describe("How many handles to return (default 8)"),
+  },
+  async ({ query, limit }) => {
+    const g = await gate("memory_search", { query });
+    if (g.gated) return g.response;
+    const r = await retrieval.byMeaning(query, { limit });
+    record(
+      "memory_search",
+      { query },
+      g.cls,
+      r.available ? `${r.hits?.length ?? 0} hits` : `unavailable: ${r.reason}`,
+      { engine: r.driver, refused: r.refused }
+    );
+    if (!r.available) {
+      return text(
+        {
+          status: "no_retrieval_engine",
+          reason: r.reason,
+          // Never a dead end: the filter path is always there, and saying so
+          // is the difference between a missing feature and a broken one.
+          instead: 'journal_query({ contains: "...", count: true }) answers by pattern and by count',
+        },
+        "memory_search"
+      );
+    }
+    return text(r, "memory_search");
   }
 );
 

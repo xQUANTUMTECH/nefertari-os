@@ -47,6 +47,7 @@ import * as leases from "./leases.mjs";
 import * as budget from "./budget.mjs";
 import * as approvals from "./approvals.mjs";
 import { workingSet } from "./workingset.mjs";
+import * as retrieval from "./retrieval.mjs";
 
 /**
  * Everything a session needs to carry on after losing its own memory of it.
@@ -115,6 +116,15 @@ export function recall({ dir, limit = 12 } = {}) {
       means: b.observed.carried_means,
       remaining: b.remaining,
     },
+    // Whether questions can be asked by MEANING, or only by filter. A
+    // resumed agent needs to know which of the two it has before it decides
+    // how to look for something.
+    memory_search: (() => {
+      const s = retrieval.status();
+      return s.enabled
+        ? { available: true, how: 'memory_search({ query: "..." })', engine: s.driver, local: s.local }
+        : { available: false, reason: s.reason };
+    })(),
     provenance:
       "Every line here is derived from the signed journal, the paged store, or the lease table — none of it " +
       "is this agent's account of itself. Nothing was summarised: what is named can be fetched in full.",

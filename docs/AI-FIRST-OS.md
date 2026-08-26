@@ -376,6 +376,15 @@ init proprio (systemd resta).
       spiegarsi e restituire resta permesso.
       Resta aperta la **prelazione fra goal** di §4.2: qui c'è il contatore e il limite, non ancora
       lo scheduler che toglie quota a un goal per darla a un altro
+- [x] **Seam di retrieval: `memory_search`** — memoria per significato come **driver opzionale**. Il
+      motore sta fuori dal repository ed è libero di essere commerciale; aperti restano il contratto
+      (due chiamate: `/index`, `/search`), la policy e il driver nullo. Senza motore non cambia nulla.
+      **Due bug veri trovati dal test:** (1) la prima versione mandava all'indice solo i primi 2KB di
+      ogni corpo, per una cautela presa dal posto sbagliato — il pager protegge la *finestra*, non il
+      loopback; con le preview la funzione *sembrava* funzionare ed era incapace di trovare qualsiasi
+      cosa oltre la prima pagina. (2) il file di stato degli indicizzati stava dentro la cartella
+      degli handle, che viene scandita per metadata: veniva riletto come una maniglia fantasma. Una
+      directory-store deve contenere esattamente un tipo di cosa
 - [x] **`journal_query`: il registro si interroga, non si legge** — la risposta all'obiezione del
       registro che sfonda il contesto. Filtro e conteggio dal lato demone, nella finestra passa solo
       la risposta. *Numero: 8.001 entry (2,3 MB) riassunte in **137 byte**; 5 restituite su 4.000
@@ -530,11 +539,30 @@ Tre proprietà, e servono tutte e tre:
    una risposta sbagliata.
 3. **Puntatori, non contenuto.** La risposta nomina; chi vuole il corpo lo chiede.
 
-**Quello che questo NON fa è rispondere per significato.** *"Cosa abbiamo deciso sul parser?"* non è
-un filtro, è retrieval. È esattamente lo slot di **NexusDB** — e la forma qui è costruita per
-riceverlo: una query restituisce puntatori, quindi cambiare il modo di scegliere *quali* puntatori
-non cambia nient'altro. Il livello 4 (sapere durevole fra run) e il retrieval semantico sul livello
-1 sono lo stesso pezzo, ed è il pezzo che Nefertari lascia apposta aperto.
+**Quello che i filtri NON fanno è rispondere per significato.** *"Cosa abbiamo deciso sul parser?"* non
+è un filtro, è retrieval — e adesso c'è il **seam**: `memory_search` con un motore come **driver
+opzionale**, non come dipendenza. Senza motore non cambia niente e la risposta lo dice, indicando la
+strada che resta aperta. Il motore è fuori da questo repository ed è libero di essere commerciale;
+quello che è aperto è il contratto, la policy intorno, e il driver nullo che rende il tutto opzionale.
+
+**In Nefertari sta la policy, non la ricerca.** Il motore trova; il layer decide cosa gli è permesso
+ricevere e cosa deve tornare insieme alla risposta. Due regole, e stanno da questa parte del seam
+proprio perché un driver potrebbe essere di chiunque:
+
+1. **L'endpoint dev'essere locale.** Indicizzare significa embeddare: con un motore remoto
+   l'indicizzazione *è* esfiltrazione — del registro primario — e avverrebbe in silenzio, come
+   effetto collaterale di una funzione che sembra una casella di ricerca. Un endpoint non locale
+   viene **rifiutato**. Non vietato: chi ha un motivo può forzare con `ALLOW_REMOTE=1`, ma la scelta
+   è esplicita e ogni `status` continua a dichiararla — un override che smette di vedersi smette di
+   essere una decisione e diventa un default che nessuno ha scelto.
+2. **La provenienza sopravvive al retrieval**, altrimenti il retrieval è una lavatrice: una riga
+   ostile dentro una pagina scaricata viene trovata *per significato*, sollevata dal contesto in cui
+   stava, e restituita come "conoscenza recuperata" con l'etichetta lasciata indietro. Ogni
+   risultato viene **ri-etichettato dallo store**, non da quel che dichiara il motore.
+
+Il motore riceve testo e restituisce **id**: nessuna autorità se non il ranking. I contenuti tornano
+dallo store, e un id che non abbiamo mai memorizzato viene ignorato — un motore ordina, non aggiunge
+membri.
 
 ### Il pager è il modello locale
 

@@ -330,7 +330,11 @@ export function list(max = 50, { includeEvicted = false } = {}) {
   } catch {
     return [];
   }
-  const kept = includeEvicted ? all : all.filter((m) => !m.evicted);
+  // Only files that actually describe a handle. Anything else in this
+  // directory is not ours to interpret, and guessing produced a phantom
+  // entry with no id that every caller then had to cope with.
+  const real = all.filter((m) => typeof m?.id === "string" && /^ctx_[0-9a-f]{10}$/.test(m.id));
+  const kept = includeEvicted ? real : real.filter((m) => !m.evicted);
   return kept
     .sort((a, b) => (a.at < b.at ? 1 : -1))
     .slice(0, max)

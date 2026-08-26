@@ -212,6 +212,7 @@ export function classify(tool, args) {
     case "context_list":
     case "recall":
     case "journal_query":
+    case "memory_search":
       return { class: CLASS.REVERSIBLE, reason: "read-only" };
     case "fs_write":
       return isSensitivePath(args.path)

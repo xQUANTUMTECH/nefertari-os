@@ -398,6 +398,22 @@ results can never be mistaken for all of them.
 What it deliberately does not do is answer by meaning. *"What did we decide
 about the parser?"* is retrieval, not filtering — that is the slot NexusDB
 fills, and the shape here is built to receive it: queries return pointers, so
+
+**Memory by meaning is a driver, not a dependency.** `memory_search` answers
+the questions no pattern will — *what did we decide about the parser* — by
+handing the paged store to a retrieval engine and getting handles back. The
+engine lives outside this repository and is free to be commercial; what is
+open is the contract (`/index`, `/search`), the policy around it, and the null
+driver that makes the whole thing optional. With no engine configured nothing
+changes, and the answer says which path is still open.
+
+The policy stays here, because a driver could be anyone's. **A non-local
+endpoint is refused**: indexing means embedding, so a remote engine would send
+the journal off the machine as a side effect of a feature that reads like a
+search box. Overriding is possible, explicit, and never stops announcing
+itself. And **provenance is re-applied from the store on every result**, so an
+engine cannot launder a trust label by lifting a hostile line out of the page
+it came from. The engine ranks; it has no authority over anything else.
 a better way of choosing which pointers changes nothing else.
 
 **Memory is data, never an instruction.** A result paged out of a `curl` comes
