@@ -17,8 +17,11 @@
 //            model management. Never required.
 //   llamacpp llama.cpp's native /completion, for a bare server with no shim.
 //   http     ANY endpoint at all, wired purely through env — the escape hatch
-//            for a WebGPU runtime, an extension bridge (gemma-gem exposes its
-//            in-browser Gemma this way), or something not invented yet.
+//            for a WebGPU runtime, a bridge to a model living somewhere with no
+//            HTTP of its own, or something not invented yet. A browser
+//            extension running Gemma in-page (gemma-gem is the example) needs
+//            such a bridge WRITTEN: it exposes no endpoint today, and an
+//            earlier version of this comment said otherwise.
 //   null     no local model. Deterministic detection still runs; see egress.mjs.
 //
 // Pick with NEFERTARI_LOCAL_DRIVER (default "auto" = probe openai, then ollama,
