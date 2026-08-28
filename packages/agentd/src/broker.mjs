@@ -110,10 +110,29 @@ export function classifyShell(command) {
   // Step 1 — global danger scan wins over everything.
   if (scanDanger(cmd)) return CLASS.IRREVERSIBLE;
 
-  // Step 2 — split on every separator; the whole is only as safe as its
-  // weakest segment. Splitting on `|` is safe here because pipe-into-interpreter
-  // was already caught in step 1, so remaining pipes are safe cmd -> safe cmd.
-  const segments = cmd.split(/&&|\|\||[|;&\n]/).map((s) => s.trim()).filter(Boolean);
+  // Step 2 — REDIRECTS OUT BEFORE SEPARATORS, and this is not cosmetic.
+  //
+  // `&` is a command separator, but it is also part of `2>&1` — and splitting
+  // on it turned `ls -la /tmp 2>&1` into `ls -la /tmp 2>` plus an orphan `1`,
+  // which matches nothing in the allowlist and made one of the most common
+  // idioms in shell scripting IRREVERSIBLE. The same for `&>/dev/null`,
+  // `2>&1 | head` and `echo x >&2`: four shapes an agent writes constantly,
+  // every one of them parked at the human gate for no reason.
+  //
+  // Found in production, on Railway, where an agent stopped and waited for a
+  // person to approve `ls`. A gate that fires on nothing teaches the operator
+  // to approve without reading, which is the failure MAX_PENDING exists to
+  // prevent — a false positive here costs more than it looks.
+  //
+  // Stripping them is safe because step 1 already vetted every redirect in the
+  // raw string: `&>file` was classified there, and what survives to here is
+  // either a discard sink or a file descriptor, neither of which is a command.
+  const forSegments = cmd.replace(/\d*>&\d+/g, " ").replace(/&>>?\s*\S+/g, " ");
+
+  // Split on every separator; the whole is only as safe as its weakest
+  // segment. Splitting on `|` is safe because pipe-into-interpreter was already
+  // caught in step 1, so remaining pipes are safe cmd -> safe cmd.
+  const segments = forSegments.split(/&&|\|\||[|;&\n]/).map((s) => s.trim()).filter(Boolean);
   const classes = segments.map(classifySegment);
   if (classes.includes(CLASS.IRREVERSIBLE)) return CLASS.IRREVERSIBLE;
   if (classes.includes(CLASS.NOISY)) return CLASS.NOISY;
