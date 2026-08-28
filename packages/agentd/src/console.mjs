@@ -73,13 +73,31 @@ export function status() {
       .query({ limit: 12 })
       .entries.map((e) => ({ ts: e.ts, tool: e.tool, decision: e.decision, outcome: e.outcome })),
 
-    window: {
+    // TWO KINDS OF NUMBER, and mixing them was a real bug found by running
+    // this in a container: the console is one process and the agent talks to
+    // a DIFFERENT daemon process over its own stdio pipe. Anything held in
+    // memory here describes the console, not the agent — so it read `calls: 0`
+    // beside `executed: 6`, which is the observability surface contradicting
+    // itself in the one place that has to be trustworthy.
+    //
+    // What is on disk is shared and therefore true of the whole machine. What
+    // is in memory is true of whoever answered. They are now labelled as such
+    // rather than presented as one figure.
+    activity_on_record: {
+      tool_calls: journal.query({ count: true }).matched,
+      note: "from the journal on disk: every process that touched this home",
+    },
+    window_this_process: {
       calls: b.observed.calls,
       est_tokens_carried: b.observed.est_tokens_carried,
       means: b.observed.carried_means,
       limits: b.limits,
       remaining: b.remaining,
       exhausted: b.exhausted,
+      note:
+        b.observed.calls === 0
+          ? "zero because the agent runs in its own daemon process — its window pressure is not visible from here"
+          : undefined,
     },
 
     store: {
@@ -159,7 +177,7 @@ async function act(id, what){ await api("/pending/"+id+"/"+what, { method: "POST
 function render(s){
   $("goal").textContent = s.goal ? "goal: " + s.goal : "no goal declared";
   $("tick").textContent = new Date(s.at).toLocaleTimeString();
-  const e = s.enforcement, w = s.window;
+  const e = s.enforcement, w = s.window_this_process, rec = s.activity_on_record;
   const cls = (b) => b ? "on" : "off";
   $("app").innerHTML = [
     section("Waiting for you", s.waiting_for_you.length
@@ -177,7 +195,8 @@ function render(s){
     ].join("")),
 
     section("Window", [
-      kv("tool calls", w.calls),
+      kv("tool calls on record", rec.tool_calls),
+      kv("this process", w.calls),
       kv("tokens carried (est.)", w.est_tokens_carried),
       w.limits ? kv("calls left", w.remaining.calls ?? "—") : "",
       w.exhausted ? kv("budget", '<span class="bad">exhausted: ' + w.exhausted.join(", ") + "</span>") : "",
