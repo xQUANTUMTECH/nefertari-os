@@ -43,7 +43,8 @@ export const CHAT_PAGE = `<!doctype html>
 
   .app{padding:18px 22px 18px calc(22px + 74px);min-height:100vh;display:flex;flex-direction:column;gap:14px}
   .top{display:flex;align-items:center;gap:10px}
-  .chip{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:12px;font-size:13px;color:var(--ink-2);max-width:48vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chip{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:12px;font-size:13px;color:var(--ink-2);max-width:40vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chip.st,.chip#modelchip{flex:none;max-width:none}
   .chip b{color:var(--ink);font-weight:500}
   .grow{flex:1}
   .st{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-2)}
@@ -253,10 +254,11 @@ function gateCard(p){
   el.querySelectorAll("button").forEach((b) => b.onclick = async () => { el.querySelectorAll("button").forEach((x) => x.disabled = true); await api("/chat/sessions/" + SID + "/gate/" + p.action_id + "/" + b.dataset.w, { method: "POST" }); el.classList.add("done"); });
 }
 function renderHistory(s){
+  const briefs = {};
   for (const m of s.messages) {
     if (m.role === "user") add('<div class="m user">' + esc(m.content) + "</div>");
-    else if (m.role === "assistant") { if (m.content) add('<div class="m assistant">' + esc(m.content) + "</div>"); for (const c of m.tool_calls || []) { let a = {}; try { a = JSON.parse(c.arguments || "{}"); } catch {} toolChip({ name: c.name, args_brief: a.command ? a.command.slice(0, 80) : a.path ? a.path.split("/").pop() : "" }); } }
-    else if (m.role === "tool") { let j = null; try { j = JSON.parse(m.content); } catch {} toolChip({ name: m.name, status: m.evicted ? "paged out" : j && j.status ? j.status : j && j.exitCode != null ? "exit " + j.exitCode : "ok", handle: m.handle, preview: m.evicted ? m.content : m.content.slice(0, 400), checkpoint_id: j && j.checkpoint_id }); }
+    else if (m.role === "assistant") { if (m.content) add('<div class="m assistant">' + esc(m.content) + "</div>"); for (const c of m.tool_calls || []) { let a = {}; try { a = JSON.parse(c.arguments || "{}"); } catch {} briefs[c.id] = a.command ? a.command.slice(0, 80) : a.path ? a.path.split("/").pop() : ""; toolChip({ id: c.id, name: c.name, args_brief: briefs[c.id] }); } }
+    else if (m.role === "tool") { let j = null; try { j = JSON.parse(m.content); } catch {} toolChip({ id: m.tool_call_id, name: m.name, args_brief: briefs[m.tool_call_id] || "", status: m.evicted ? "paged out" : j && j.status ? j.status : j && j.exitCode != null ? "exit " + j.exitCode : "ok", handle: m.handle, preview: m.evicted ? m.content : m.content.slice(0, 400), checkpoint_id: j && j.checkpoint_id }); }
   }
   if (s.pending) gateCard(s.pending);
 }
