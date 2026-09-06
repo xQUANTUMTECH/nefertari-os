@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 // Permission broker: classifies every action before it touches the host.
 // Allowlist philosophy: unknown = irreversible = human gate.
 //
@@ -22,6 +24,31 @@ const EXEC_SINKS =
   "sh|bash|zsh|dash|ksh|fish|python3?|perl|ruby|node|deno|php|eval|source|exec|tee|dd|xargs|env";
 
 // --- GLOBAL danger constructs: presence anywhere forces IRREVERSIBLE ---
+// Whether the host can confine a command right now — set by the daemon from
+// the enforcement driver, so this module never spawns anything. Off by default:
+// the pure classifier, and every test of it, sees a host with no sandbox.
+let confinementProbe = () => false;
+export function setConfinementProbe(fn) {
+  confinementProbe = typeof fn === "function" ? fn : () => false;
+}
+export const canConfine = () => Boolean(confinementProbe());
+
+// A working dir the sandbox can be pointed at: given, absolute, and not the
+// home directory or the root — confining "everything you own" is not
+// confinement, and a command with no cwd runs in the daemon's home.
+export function confinableCwd(cwd) {
+  if (!cwd || typeof cwd !== "string" || !path.isAbsolute(cwd)) return false;
+  const r = path.resolve(cwd);
+  return r !== os.homedir() && r !== path.parse(r).root;
+}
+
+// What stays dangerous INSIDE the sandbox. Landlock confines writes, not the
+// network: fetching code from the network and running it is the one shape a
+// confined command can still use to send bytes out, so it stays with the gate.
+const DANGER_NET = [
+  { re: () => new RegExp(`\\b(curl|wget)\\b[^|;&]*\\|\\s*(sudo\\s+)?(${EXEC_SINKS})\\b`), why: "pipe from the network into an interpreter" },
+];
+
 const DANGER = [
   { re: /\$\(/, why: "command substitution $()" },
   { re: /`/, why: "backtick command substitution" },
@@ -122,7 +149,13 @@ function staysInside(seg) {
   return true;
 }
 
-function scanDanger(cmd) {
+function scanDanger(cmd, confined = false) {
+  // Inside a checkpointed, write-confined working dir, $() and redirects are
+  // just shell; what the kernel cannot undo is bytes leaving the machine.
+  if (confined) {
+    for (const d of DANGER_NET) if (d.re().test(cmd)) return d.why;
+    return null;
+  }
   for (const d of DANGER) if (d.re.test(cmd)) return d.why;
   const rd = redirectDanger(cmd);
   if (rd) return rd;
@@ -130,7 +163,7 @@ function scanDanger(cmd) {
   return null;
 }
 
-function classifySegment(seg) {
+function classifySegment(seg, confined = false) {
   const s = seg.trim();
   if (!s) return CLASS.REVERSIBLE;
   if (/^find\b/.test(s) && FIND_DESTRUCTIVE.test(s)) return CLASS.IRREVERSIBLE;
@@ -144,15 +177,19 @@ function classifySegment(seg) {
   if (NOISY_PATTERNS.some((re) => re.test(s))) return CLASS.NOISY;
   if (TEST_RUNNERS.some((re) => re.test(s))) return CLASS.NOISY;
   if (MOVE_COPY.test(s) && staysInside(s)) return CLASS.NOISY;
+  // Unknown to the list, but the kernel limits its writes to a working dir that
+  // was checkpointed first: reversible by physics and time, noisy because the
+  // network is not part of that physics yet (see enforce.capabilities).
+  if (confined) return CLASS.NOISY;
   return CLASS.IRREVERSIBLE;
 }
 
-export function classifyShell(command) {
+export function classifyShell(command, { confined = false } = {}) {
   const cmd = (command || "").trim();
   if (!cmd) return CLASS.REVERSIBLE;
 
   // Step 1 — global danger scan wins over everything.
-  if (scanDanger(cmd)) return CLASS.IRREVERSIBLE;
+  if (scanDanger(cmd, confined)) return CLASS.IRREVERSIBLE;
 
   // Step 2 — REDIRECTS OUT BEFORE SEPARATORS, and this is not cosmetic.
   //
@@ -177,7 +214,7 @@ export function classifyShell(command) {
   // segment. Splitting on `|` is safe because pipe-into-interpreter was already
   // caught in step 1, so remaining pipes are safe cmd -> safe cmd.
   const segments = splitSegments(forSegments);
-  const classes = segments.map(classifySegment);
+  const classes = segments.map((s) => classifySegment(s, confined));
   if (classes.includes(CLASS.IRREVERSIBLE)) return CLASS.IRREVERSIBLE;
   if (classes.includes(CLASS.NOISY)) return CLASS.NOISY;
   return CLASS.REVERSIBLE;
@@ -213,10 +250,10 @@ function splitSegments(str) {
 }
 
 // Human-readable reason for the shell verdict (used in journal + gate message).
-export function shellReason(command) {
-  const why = scanDanger((command || "").trim());
+export function shellReason(command, { confined = false } = {}) {
+  const why = scanDanger((command || "").trim(), confined);
   if (why) return `dangerous construct: ${why}`;
-  const c = classifyShell(command);
+  const c = classifyShell(command, { confined });
   return c === CLASS.IRREVERSIBLE
     ? "command not in the known-safe allowlist"
     : c === CLASS.NOISY
@@ -231,6 +268,9 @@ export const PLAN_TOOLS = ["fs_read", "fs_write", "fs_delete", "shell"];
 // A plan's class is the WORST class of its steps, so one irreversible step
 // parks the whole plan at the gate before step 1 runs. Returns { class,
 // reason, per } — per[i] is the classification of step i (used by the executor).
+// Inside a plan every shell step has a working dir (the plan's, by default)
+// and the plan checkpoints it before step 0: the transaction boundary IS the
+// confinement boundary, so a step is confinable whenever the host can confine.
 export function classifyPlan(steps) {
   if (!Array.isArray(steps) || steps.length === 0)
     return { class: CLASS.IRREVERSIBLE, reason: "empty or malformed plan", per: [] };
@@ -242,7 +282,7 @@ export function classifyPlan(steps) {
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i] || {};
     const c = PLAN_TOOLS.includes(s.tool)
-      ? classify(s.tool, s.args || {})
+      ? classify(s.tool, s.args || {}, { confinable: true })
       : { class: CLASS.IRREVERSIBLE, reason: `tool not allowed inside a plan: ${s.tool}` };
     per.push(c);
     if (c.class === CLASS.IRREVERSIBLE && worst !== CLASS.IRREVERSIBLE) {
@@ -274,19 +314,23 @@ export function classifyTrajectories(trajectories, evalCmd) {
     }
   }
   if (evalCmd) {
-    const c = classifyShell(evalCmd);
+    // The eval runs inside each fork — a checkpoint by construction.
+    const opts = { confined: canConfine() };
+    const c = classifyShell(evalCmd, opts);
     if (c === CLASS.IRREVERSIBLE)
-      return { class: CLASS.IRREVERSIBLE, reason: `eval command: ${shellReason(evalCmd)}` };
+      return { class: CLASS.IRREVERSIBLE, reason: `eval command: ${shellReason(evalCmd, opts)}` };
     if (c === CLASS.NOISY && worst === CLASS.REVERSIBLE) {
       worst = CLASS.NOISY;
-      reason = `eval command: ${shellReason(evalCmd)}`;
+      reason = `eval command: ${shellReason(evalCmd, opts)}`;
     }
   }
   return { class: worst, reason };
 }
 
 // Classify a tool invocation. Returns { class, reason }.
-export function classify(tool, args) {
+// `ctx.confinable` says a transaction boundary already exists for this call
+// (a plan's dir, a fork); a bare shell has to bring its own cwd to earn it.
+export function classify(tool, args, ctx = {}) {
   switch (tool) {
     case "fs_read":
     case "working_set":
@@ -352,8 +396,21 @@ export function classify(tool, args) {
     }
     case "trajectories_run":
       return classifyTrajectories(args?.trajectories, args?.eval_cmd);
-    case "shell":
-      return { class: classifyShell(args.command || ""), reason: shellReason(args.command || "") };
+    case "shell": {
+      const cmd = args.command || "";
+      const confined = canConfine() && (ctx.confinable || confinableCwd(args.cwd));
+      const c = classifyShell(cmd, { confined });
+      // Only say "confined" when confinement is what changed the verdict: a
+      // plain `ls` is reversible with or without a sandbox.
+      if (confined && c !== classifyShell(cmd)) {
+        return {
+          class: c,
+          confined: true,
+          reason: `not in the allowlist — runs confined: writes only under the working dir, checkpointed first; network open`,
+        };
+      }
+      return { class: c, reason: shellReason(cmd, { confined }) };
+    }
     default:
       return { class: CLASS.IRREVERSIBLE, reason: "unknown tool" };
   }

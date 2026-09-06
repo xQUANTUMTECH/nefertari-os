@@ -19,7 +19,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import { parseArgs, plan } from "../src/run.mjs";
-import { enforcerPath } from "../src/enforce.mjs";
+import { enforcerPath, capabilities } from "../src/enforce.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "src", "cli.mjs");
 
@@ -32,8 +32,8 @@ const CLI = path.join(import.meta.dirname, "..", "src", "cli.mjs");
   console.log("  ok — flags stop at --, and the agent's are its own");
 }
 
-if (!enforcerPath()) {
-  console.log("  skip — no Landlock enforcer on this host; the rest of this test is the enforcement itself");
+if (!enforcerPath() || !capabilities().ok) {
+  console.log("  skip — " + (enforcerPath() ? capabilities().reason : "no Landlock enforcer on this host") + "; the rest of this test is the enforcement itself");
   console.log("RUN TESTS PASSED (argument parsing only)");
   process.exit(0);
 }

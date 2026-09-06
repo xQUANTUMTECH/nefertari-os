@@ -49,8 +49,9 @@ export function opFsDelete({ path: p }) {
 
 export function opShell({ command, cwd }, cls) {
   const workdir = cwd || os.homedir();
-  // Reversible commands run under the enforcement driver (writes confined to
-  // workdir + /tmp) when available; everything else runs plain.
+  // Reversible and noisy commands run under the enforcement driver (writes
+  // confined to workdir + /tmp) when available; an approved irreversible one,
+  // and a noisy one that exists to write outside workdir, run plain.
   const { file, args: execArgs, enforced, driver } = enforceWrap(command, { cls, cwd: workdir });
 
   // A cgroup of its own, so the command is a thing the OS can be told about

@@ -244,6 +244,18 @@ bash packages/agentd/test/enforce-docker.sh
 Landlock confines **writes**, which is what reversibility needs; it is not confidentiality, and
 ABI 3 carries no network rules. An egress boundary is the broker's job, or the `landrun` driver's.
 
+**On a host that can confine, the allowlist stops being the line.** A shell command the
+broker does not know — a `for` loop, `sed -i`, `node script.mjs`, `rm` inside the project —
+runs with its writes limited by the kernel to a working dir that was **checkpointed first**, and
+passes as `noisy` with the `checkpoint_id` in the reply: reversible by physics and time, not by
+pattern. What stays with the gate is what the sandbox cannot undo: bytes leaving the machine
+(`curl -d`, code fetched from the network and run), a stored identity, a sensitive path, and
+anything `NEFERTARI_ASK` names. Two conditions earn it: the driver answers `capabilities().ok`
+(the binary is *asked*, because a built enforcer on a kernel without Landlock refuses rather than
+pretends — and the daemon then falls open, or closed with `NEFERTARI_ENFORCE=1`), and the call
+brings a real `cwd` — not the home directory, not `/`. Plans and forks are boundaries by
+construction. Without either, the allowlist above is exactly what applies.
+
 The `custom` driver is the agnostic escape hatch — plug in any tool without
 touching code:
 

@@ -8,12 +8,16 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { enforceWrap } from "../src/enforce.mjs";
+import { enforceWrap, capabilities } from "../src/enforce.mjs";
 import { CLASS } from "../src/broker.mjs";
 
-// Noisy/system commands always run unconfined, whatever the driver.
-assert.equal(enforceWrap("mkdir /tmp/x", { cls: CLASS.NOISY, cwd: "/tmp" }).file, "bash");
-console.log("  ok — noisy commands run unconfined");
+// A noisy command whose point is to write outside the working dir runs
+// unconfined, whatever the driver: confining `apt-get install` would only make
+// it fail. (A noisy command that stays inside, like mkdir, is confined like a
+// reversible one — see test/confined.mjs.)
+assert.equal(enforceWrap("sudo apt-get install -y gh", { cls: CLASS.NOISY, cwd: "/tmp" }).file, "bash");
+assert.equal(enforceWrap("rm -rf /srv/old", { cls: CLASS.IRREVERSIBLE, cwd: "/tmp" }).file, "bash");
+console.log("  ok — outside-writing noisy commands and approved irreversible ones run unconfined");
 
 // The "null" driver is an explicit opt-out: reversible commands run plain.
 {
@@ -71,7 +75,15 @@ const bin =
     "/usr/local/bin/nefertari-enforce",
   ].find((p) => fs.existsSync(p));
 
-if (bin && fs.existsSync(bin)) {
+// Present is not usable: the binary refuses on a kernel without Landlock, and
+// the wrapper must then fall open rather than hand every `ls` an exit 3.
+if (bin && fs.existsSync(bin) && !capabilities().ok) {
+  const rev = enforceWrap("ls", { cls: CLASS.REVERSIBLE, cwd: "/tmp" });
+  assert.equal(rev.file, "bash", "enforcer present but unusable here: fail-open");
+  assert.equal(rev.enforced, false);
+  console.log("  ok — enforcer built but the kernel cannot back it: fail-open, with a reason");
+  console.log("  skip — " + capabilities().reason + "; the kernel proof needs a Landlock host");
+} else if (bin && fs.existsSync(bin)) {
   const rev = enforceWrap("ls", { cls: CLASS.REVERSIBLE, cwd: "/tmp" });
   assert.equal(rev.file, bin, "reversible commands run under the enforcer when present");
   assert.equal(rev.driver, "landlock");

@@ -30,7 +30,7 @@ import * as idle from "./idle.mjs";
 import { speculationStats } from "./speculate.mjs";
 import * as cgroups from "./cgroups.mjs";
 import * as ask from "./ask.mjs";
-import { enforcerPath } from "./enforce.mjs";
+import { capabilities as confinement } from "./enforce.mjs";
 
 /**
  * One answer describing the state of the machine and the agent on it.
@@ -53,7 +53,8 @@ export function status() {
     // operator needs to know which half rather than assume all of it.
     ask_rules: ask.rules(),
     enforcement: {
-      landlock: Boolean(enforcerPath()),
+      landlock: confinement().ok,
+      confinement: confinement().reason,
       cgroups: cgroups.available().ok,
       journal_signed: journal.verify().ok,
       journal_entries: journal.query({ count: true }).matched,

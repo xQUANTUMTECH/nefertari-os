@@ -22,6 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import { CLASS } from "./broker.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -129,12 +130,57 @@ function selectedDriver() {
   return name === "auto" ? "landlock" : name;
 }
 
-// Returns { file, args, enforced, driver } ready for execFile. Only REVERSIBLE
-// commands are confined; everything else runs plain. Falls open to plain bash
-// when the selected driver is unavailable, unless NEFERTARI_ENFORCE=1.
+// Can this host confine a command right now? Not "is the binary there": the
+// binary can be there on a kernel without Landlock, and it refuses rather than
+// pretend — so it is asked, once. The answer is a property of the host, not of
+// the call, and is cached for the life of the process. `net` is false for every
+// driver today: Landlock ABI 3 has no network rules, so a confined command can
+// still send bytes out, and the classifier keeps treating that as the gate's
+// business.
+// Cached per driver configuration: tests switch drivers through the
+// environment mid-process, and an answer for the wrong driver is worse than none.
+let caps, capsKey;
+const configKey = () => [selectedDriver(), process.env.NEFERTARI_ENFORCE_BIN, process.env.NEFERTARI_LANDRUN_BIN, process.env.NEFERTARI_ENFORCE_CUSTOM_BIN].join("|");
+export function capabilities() {
+  if (caps && capsKey === configKey()) return caps;
+  capsKey = configKey();
+  const off = (reason) => (caps = { ok: false, driver: selectedDriver(), fs: false, net: false, reason });
+  const name = selectedDriver();
+  if (name === "null") return off("driver null: confinement opted out");
+  const driver = drivers[name];
+  if (!driver) return off(`unknown enforcement driver "${name}"`);
+  const probe = driver({ command: "true", writePaths: ["/tmp"], readPaths: [] });
+  if (!probe) return off(`${name}: sandboxer binary not found`);
+  // The custom driver is whatever the operator wired in; it has no flag
+  // contract to probe, and the declaration is the operator's to keep.
+  if (name === "custom") return (caps = { ok: true, driver: name, fs: true, net: false, reason: "custom: sandboxer declared by the operator, not probed; network not confined" });
+  const r = spawnSync(probe.file, probe.args, { timeout: 5000, encoding: "utf8" });
+  if (r.status !== 0) return off(`${name}: ${((r.stderr || r.stdout || "").trim().split("\n")[0]) || "probe failed"}`);
+  return (caps = { ok: true, driver: name, fs: true, net: false, reason: `${name}: writes confined to the working dir; network not confined` });
+}
+/** Test seam: forget the cached answer (the environment changed). */
+export function resetCapabilities() {
+  caps = undefined;
+}
+
+// Commands whose whole point is to write OUTSIDE the working directory. Noisy
+// by classification, and confining them would only make them fail: an
+// approved `apt-get install` that cannot touch /usr is a broken promise, not a
+// safer one.
+const OUTSIDE_CWD =
+  /(^|[\s;&|])(sudo\s+)?(apt(-get)?|dpkg|yum|dnf|pacman|brew|snap|systemctl|service|docker|kubectl|pip3? install|cargo install|npm (install|i|ci)\b[^;&|]*(-g|--global))\b/;
+
+// Returns { file, args, enforced, driver } ready for execFile. Reversible
+// commands are confined, and so are noisy ones — a command the allowlist did
+// not know, running inside a checkpointed working dir, is exactly what the
+// sandbox is for. Two things run plain: an irreversible command a human
+// approved as written, and a noisy command that exists to write outside the
+// working dir (see OUTSIDE_CWD). Falls open to plain bash when the selected
+// driver is unavailable, unless NEFERTARI_ENFORCE=1.
 export function enforceWrap(command, { cls, cwd }) {
   const plain = { file: "bash", args: ["-lc", command], enforced: false, driver: "null" };
-  if (cls !== CLASS.REVERSIBLE) return plain;
+  if (cls === CLASS.IRREVERSIBLE) return plain;
+  if (cls === CLASS.NOISY && OUTSIDE_CWD.test(command)) return plain;
 
   const name = selectedDriver();
   if (name === "null") return plain;
@@ -142,6 +188,14 @@ export function enforceWrap(command, { cls, cwd }) {
   const driver = drivers[name];
   if (!driver) {
     if (REQUIRED) throw new Error(`NEFERTARI_ENFORCE=1 but enforcement driver "${name}" is unknown`);
+    return plain;
+  }
+  // A binary on a kernel that cannot back it refuses every command it wraps —
+  // found the day the enforcer was first built on a host without Landlock, when
+  // `ls` started failing with exit 3. Ask the host, not the filesystem.
+  const caps = capabilities();
+  if (!caps.ok) {
+    if (REQUIRED) throw new Error(`NEFERTARI_ENFORCE=1 but ${caps.reason}`);
     return plain;
   }
 

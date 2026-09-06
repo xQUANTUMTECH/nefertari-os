@@ -20,6 +20,11 @@ import * as speculate from "./speculate.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
 import * as ask from "./ask.mjs";
+import * as enforce from "./enforce.mjs";
+import { setConfinementProbe } from "./broker.mjs";
+// The classifier learns from the driver whether this host can confine a
+// command; without this it assumes it cannot, and falls back to the allowlist.
+setConfinementProbe(() => enforce.capabilities().fs);
 import * as timeline from "./timeline.mjs";
 import * as ops from "./ops.mjs";
 import { runPlan } from "./plan.mjs";
@@ -87,13 +92,14 @@ async function gate(tool, args, fp) {
   // Real work has arrived: whatever was being prepared stops now. Speculation
   // that competed with the call it was preparing for would be worse than none.
   speculate.windowClose();
-  let { class: cls, reason } = classify(tool, args);
+  let { class: cls, reason, confined = false } = classify(tool, args);
   // The person's own line, drawn on top of the broker's — see ask.mjs. It can
   // only send an action to the gate, never past it.
   const asked = ask.match(tool, args);
   if (asked && cls !== CLASS.IRREVERSIBLE) {
     cls = CLASS.IRREVERSIBLE;
     reason = asked;
+    confined = false;
   }
   // Out of budget stops NEW work and allows winding down. An agent that can
   // call nothing cannot release its leases, cannot say what it was doing, and
@@ -208,7 +214,7 @@ async function gate(tool, args, fp) {
     journal.append({ tool, args, class: cls, decision: "approved_by_human", reason });
     return { gated: false, cls, reason };
   }
-  return { gated: false, cls, reason };
+  return { gated: false, cls, reason, confined };
 }
 
 function record(tool, args, cls, outcome, extra = {}, fp) {
@@ -281,9 +287,21 @@ server.tool(
     // the place it was granted for, which is stricter and correct.
     const g = await gate("shell", { command, cwd });
     if (g.gated) return g.response;
+    // Physics and time together: a command the list does not know runs with
+    // its writes confined to cwd — and cwd is checkpointed first, so what it
+    // does in there is one timeline_restore away. Without both it would have
+    // been gated above.
+    const ck = g.confined ? timeline.checkpoint(cwd, { label: `before: ${command.slice(0, 80)}`, meta: { shell: command } }).id : null;
     const r = await ops.opShell({ command, cwd }, g.cls);
-    record("shell", { command, cwd }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, { notify: g.cls === CLASS.NOISY, ...r.meta });
-    return text(r.output, "shell", { command, cwd });
+    record("shell", { command, cwd }, g.cls, r.output.exitCode === 0 ? "ok" : `exit ${r.output.exitCode}`, {
+      notify: g.cls === CLASS.NOISY,
+      ...(ck ? { confined: true, checkpoint_id: ck } : {}),
+      ...r.meta,
+    });
+    const out = ck
+      ? { ...r.output, confined: `writes were limited to ${cwd}; undo everything it did with timeline_restore ${ck}`, checkpoint_id: ck }
+      : r.output;
+    return text(out, "shell", { command, cwd });
   }
 );
 
@@ -874,6 +892,7 @@ server.tool(
       idle: idle.stats(),
       hostname: os.hostname(),
       ask_rules: ask.rules(),
+      confinement: enforce.capabilities(),
       platform: `${os.type()} ${os.release()} (${os.arch()})`,
       uptimeMin: Math.round(os.uptime() / 60),
       memory: { freeMB: Math.round(os.freemem() / 1e6), totalMB: Math.round(os.totalmem() / 1e6) },
