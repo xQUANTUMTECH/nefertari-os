@@ -254,6 +254,12 @@ export function shellReason(command, { confined = false } = {}) {
   const why = scanDanger((command || "").trim(), confined);
   if (why) return `dangerous construct: ${why}`;
   const c = classifyShell(command, { confined });
+  // The reason is what the human reads at the gate: name the network when the
+  // network is why, rather than blaming a list the command may not even be on.
+  if (c === CLASS.IRREVERSIBLE && splitSegments(command || "").some((s) => /^(curl|wget)\b/.test(s.trim()) && classifySegment(s, confined) === CLASS.IRREVERSIBLE))
+    return confined
+      ? "sends data out, or fetches to a file: the sandbox confines writes, not the network"
+      : "curl/wget sends data out, writes a file, or queries an untrusted host";
   return c === CLASS.IRREVERSIBLE
     ? "command not in the known-safe allowlist"
     : c === CLASS.NOISY

