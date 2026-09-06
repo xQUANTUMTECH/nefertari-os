@@ -22,6 +22,8 @@
 //   GET  /journal?tool=&decision=&contains=&count=1  → the record, queried
 //   GET  /status                → everything an operator needs to watch it
 //   GET  /                      → the operator page (no auth: it asks for the token)
+//   GET  /chat                  → the conversation page (same)
+//   *    /chat/sessions…        → the conversation API, see chat.mjs
 
 import http from "node:http";
 import fs from "node:fs";
@@ -31,6 +33,8 @@ import { HOME, ensureHome } from "./paths.mjs";
 import * as approvals from "./approvals.mjs";
 import * as journal from "./journal.mjs";
 import { status as consoleStatus, PAGE } from "./console.mjs";
+import { CHAT_PAGE } from "./chatpage.mjs";
+import * as chat from "./chat.mjs";
 
 const TOKEN_FILE = path.join(HOME, "token");
 
@@ -68,12 +72,20 @@ export function createServer({ token }) {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       return res.end(PAGE);
     }
+    if (req.method === "GET" && url.pathname === "/chat") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      return res.end(CHAT_PAGE);
+    }
     if (req.method === "GET" && url.pathname === "/health") {
       return send(res, 200, { ok: true, pending: approvals.listPending().length });
     }
     if (!tokenOk(req, token)) {
       return send(res, 401, { error: "missing or invalid bearer token" });
     }
+
+    // The conversation: its own module, its own async handler. It answers
+    // every request itself, errors included, so nothing here awaits it.
+    if (parts[0] === "chat") return void chat.handle(req, res, url, parts);
 
     try {
       if (req.method === "GET" && url.pathname === "/pending") {

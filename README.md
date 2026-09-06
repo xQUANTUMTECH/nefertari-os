@@ -607,6 +607,31 @@ node src/cli.mjs serve               # headless approval API (containers/Railway
                                      #   Bearer token in ~/.nefertari/token or NEFERTARI_TOKEN
 ```
 
+## The conversation (`/chat`)
+
+The same `serve` process also serves a conversation page for a person who is
+not a developer: a goal, a folder, and an agent that works through the broker.
+The brain is any OpenAI-compatible endpoint — `NEFERTARI_CHAT_URL`,
+`NEFERTARI_CHAT_KEY`, `NEFERTARI_CHAT_MODEL` — a driver, never a dependency.
+The body is `agentd` over MCP, exactly as any other agent reaches it, so an
+action parked at the gate appears **in the conversation** as a card with
+Approve / Deny, and "put it back" is a click on a checkpoint.
+
+It is also the first client that owns both sides of the context window, which
+is where the **pager** lives (`packages/agentd/src/chat.mjs`): nothing is
+delivered to the model beyond `NEFERTARI_CHAT_BUDGET` estimated tokens; a
+result larger than `NEFERTARI_CHAT_MAX_RESULT` is paged on arrival; older
+results leave the window for disk under a `win_…` handle with a deterministic
+stub (tool, arguments, size, first line — never a summary the model wrote),
+and come back through `window_fetch(handle, grep)`. Every delivery, eviction
+and fault is a line in the session's own log, so what was resident at turn N
+is reconstructible. The page shows the meter per turn.
+
+```bash
+NEFERTARI_CHAT_URL=https://api.openai.com/v1 NEFERTARI_CHAT_KEY=sk-… NEFERTARI_CHAT_MODEL=gpt-4o \
+  node src/cli.mjs serve            # then open http://127.0.0.1:7343/chat
+```
+
 ## Windows companion (phase 2, block 1)
 
 If agentd runs in WSL2, you approve from Windows — no shell into WSL needed.
