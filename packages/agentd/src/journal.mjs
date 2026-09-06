@@ -143,24 +143,65 @@ function loadLastHash() {
   return null;
 }
 
+// More than one process writes this file, by design: the agent's daemon, the
+// approval API a human answers from, the CLI. A chain head cached per process
+// is therefore a chain head that is wrong the moment somebody else appends —
+// found the first time a console approval landed between two tool calls and
+// verify() named the line. So the head is re-read from the tail of the file
+// under a lock, every time. The lock is a directory because mkdir is atomic on
+// every filesystem this runs on and needs no native module; a lock older than
+// a couple of seconds belongs to a process that died holding it.
+const LOCK_DIR = JOURNAL_FILE + ".lock";
+const LOCK_STALE_MS = 2000;
+
+function withLock(fn) {
+  const deadline = Date.now() + LOCK_STALE_MS * 2;
+  for (;;) {
+    try {
+      fs.mkdirSync(LOCK_DIR);
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - fs.statSync(LOCK_DIR).mtimeMs > LOCK_STALE_MS) fs.rmdirSync(LOCK_DIR);
+      } catch {
+        // Somebody else cleared it first; loop and try again.
+      }
+      if (Date.now() > deadline) throw new Error("journal lock held too long: " + LOCK_DIR);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      fs.rmdirSync(LOCK_DIR);
+    } catch {
+      // Already gone (stale-cleared by another process); nothing to release.
+    }
+  }
+}
+
 export function append(entry) {
   ensureHome();
-  if (lastHash === undefined) lastHash = loadLastHash();
-  const body = JSON.stringify({ ts: new Date().toISOString(), ...entry, prev: lastHash });
-  const hash = digest(body);
-  // Signing the hash rather than the body covers both transitively: the hash
-  // already commits to the content and to the link to the entry before it.
-  let sig = "";
-  try {
-    sig = `,"sig":"${crypto.sign(null, Buffer.from(hash, "utf8"), loadKeys().priv).toString("base64")}"`;
-  } catch {
-    // An unsignable entry is still worth recording. It verifies as unsigned,
-    // which is a visible gap rather than a silent one.
-  }
-  // Splice rather than re-serialise: the bytes hashed are the bytes stored.
-  fs.appendFileSync(JOURNAL_FILE, `${body.slice(0, -1)},"hash":"${hash}"${sig}}\n`);
-  lastHash = hash;
-  return hash;
+  return withLock(() => {
+    lastHash = loadLastHash();
+    const body = JSON.stringify({ ts: new Date().toISOString(), ...entry, prev: lastHash });
+    const hash = digest(body);
+    // Signing the hash rather than the body covers both transitively: the hash
+    // already commits to the content and to the link to the entry before it.
+    let sig = "";
+    try {
+      sig = `,"sig":"${crypto.sign(null, Buffer.from(hash, "utf8"), loadKeys().priv).toString("base64")}"`;
+    } catch {
+      // An unsignable entry is still worth recording. It verifies as unsigned,
+      // which is a visible gap rather than a silent one.
+    }
+    // Splice rather than re-serialise: the bytes hashed are the bytes stored.
+    fs.appendFileSync(JOURNAL_FILE, `${body.slice(0, -1)},"hash":"${hash}"${sig}}\n`);
+    lastHash = hash;
+    return hash;
+  });
 }
 
 /** Test seam: forget the in-memory chain head, forcing a re-read. */
