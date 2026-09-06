@@ -81,7 +81,10 @@ const until = async (id, state, ms = 30000) => {
 };
 
 // -- the page and the door --
-assert.match(await (await fetch(base + "/chat")).text(), /<title>Nefertari<\/title>/, "the page is served without a token");
+const page = await (await fetch(base + "/chat")).text();
+assert.match(page, /<title>Nefertari<\/title>/, "the page is served without a token");
+// The page lives in a template literal; compile its script so a quoting slip cannot ship.
+new (await import("node:vm")).Script(/<script>([\s\S]*)<\/script>/.exec(page)[1], { filename: "chatpage.js" });
 assert.equal((await fetch(base + "/chat/sessions")).status, 401, "the API is not");
 ok("page open, API behind the token");
 

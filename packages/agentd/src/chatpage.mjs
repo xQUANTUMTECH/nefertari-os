@@ -332,7 +332,7 @@ async function openFile(rel){
 // ---- timeline ----
 async function loadTimeline(){
   const cks = await api("/chat/sessions/" + SID + "/timeline");
-  $("ckpts").innerHTML = (Array.isArray(cks) && cks.length) ? cks.map((c) => '<div class="row" title="' + esc(c.id) + '"><span class="n">' + esc(c.label || c.id) + '</span><span class="r">' + new Date(c.createdAt).toLocaleTimeString([], { hour12: false }) + " · " + c.files + " files</span><button data-ck="' + esc(c.id) + '">Restore</button></div>').join("") : '<p class="empty">nothing checkpointed yet</p>';
+  $("ckpts").innerHTML = (Array.isArray(cks) && cks.length) ? cks.map((c) => '<div class="row" title="' + esc(c.id) + '"><span class="n">' + esc(c.label || c.id) + '</span><span class="r">' + new Date(c.createdAt).toLocaleTimeString([], { hour12: false }) + " · " + c.files + ' files</span><button data-ck="' + esc(c.id) + '">Restore</button></div>').join("") : '<p class="empty">nothing checkpointed yet</p>';
   $("ckpts").querySelectorAll("button").forEach((b) => b.onclick = async (ev) => { ev.stopPropagation(); if (!confirm("Put the folder back as it was at this point? (this is itself undoable)")) return; b.disabled = true; await api("/chat/sessions/" + SID + "/restore", { method: "POST", body: JSON.stringify({ checkpoint_id: b.dataset.ck }) }); });
 }
 $("tl-refresh").onclick = loadTimeline;
