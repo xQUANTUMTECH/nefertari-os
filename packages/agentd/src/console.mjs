@@ -29,6 +29,7 @@ import * as retrieval from "./retrieval.mjs";
 import * as idle from "./idle.mjs";
 import { speculationStats } from "./speculate.mjs";
 import * as cgroups from "./cgroups.mjs";
+import * as ask from "./ask.mjs";
 import { enforcerPath } from "./enforce.mjs";
 
 /**
@@ -50,6 +51,7 @@ export function status() {
     // What the machine can actually enforce here, said plainly. On a platform
     // that does not delegate cgroups, half of this is unavailable — and an
     // operator needs to know which half rather than assume all of it.
+    ask_rules: ask.rules(),
     enforcement: {
       landlock: Boolean(enforcerPath()),
       cgroups: cgroups.available().ok,

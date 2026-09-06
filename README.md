@@ -76,7 +76,7 @@ The same `agentd` runs unmodified on:
 | Class | Examples | Broker decision |
 |---|---|---|
 | `reversible` | read file, write file (snapshotted), restart service, redirect to `/dev/null` | pass |
-| `noisy` | install package, open port | pass + notify |
+| `noisy` | install package, open port, `mv`/`cp` inside the working dir, run the tests | pass + notify |
 | `irreversible` | delete outside snapshot, send data out, spend money, unknown shell command, write to a sensitive path | **human approval required** |
 
 Unknown = irreversible. The safe default is not "trust the AI", it's "prove reversibility or ask".
@@ -90,6 +90,14 @@ about in production. Declared autonomy profiles, autonomy *budgets* ("three
 irreversible actions, then stop") and expiring per-goal delegations are on the
 roadmap — with the constraint that a profile may make an action autonomous and
 must never make it unrecorded.
+
+The half of that line that *tightens* exists today. `NEFERTARI_ASK` names tools
+that must reach the human gate whatever the broker thinks — `fs_delete`,
+`shell:git commit`, `http_as` — because "don't delete anything without asking
+me" is about the person's intent, not about reversibility, and a delete the
+broker can undo is still a delete they wanted to be asked about. A rule can
+send an action to the gate, never past it, and the pending entry names the rule
+(`packages/agentd/src/ask.mjs`).
 
 ### What the broker specifically catches
 

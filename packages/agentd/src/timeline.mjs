@@ -20,7 +20,11 @@ import * as speculate from "./speculate.mjs";
 // manifest and dwarf the source they belong to, so copying them K times would
 // make forking cost more than the work being forked. See linkExcluded() for how
 // a fork still reaches them.
-const DEFAULT_EXCLUDE = ["node_modules"];
+// .git is excluded because the timeline and git are two histories of the same
+// tree: with .git inside the checkpoint, promoting a fork silently rewound a
+// commit made in between. Now a restore moves the files and git reports the
+// difference, which is what a person expects of it.
+const DEFAULT_EXCLUDE = ["node_modules", ".git"];
 
 // Ask the kernel to clone rather than copy where the filesystem supports it
 // (btrfs, XFS with reflink=1, APFS). Node falls back to a full copy on its own

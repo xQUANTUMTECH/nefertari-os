@@ -19,6 +19,7 @@ import * as idle from "./idle.mjs";
 import * as speculate from "./speculate.mjs";
 import * as journal from "./journal.mjs";
 import * as snapshots from "./snapshots.mjs";
+import * as ask from "./ask.mjs";
 import * as timeline from "./timeline.mjs";
 import * as ops from "./ops.mjs";
 import { runPlan } from "./plan.mjs";
@@ -86,7 +87,14 @@ async function gate(tool, args, fp) {
   // Real work has arrived: whatever was being prepared stops now. Speculation
   // that competed with the call it was preparing for would be worse than none.
   speculate.windowClose();
-  const { class: cls, reason } = classify(tool, args);
+  let { class: cls, reason } = classify(tool, args);
+  // The person's own line, drawn on top of the broker's — see ask.mjs. It can
+  // only send an action to the gate, never past it.
+  const asked = ask.match(tool, args);
+  if (asked && cls !== CLASS.IRREVERSIBLE) {
+    cls = CLASS.IRREVERSIBLE;
+    reason = asked;
+  }
   // Out of budget stops NEW work and allows winding down. An agent that can
   // call nothing cannot release its leases, cannot say what it was doing, and
   // cannot be understood afterwards — so the tools that explain or give back
@@ -382,11 +390,11 @@ server.tool(
 
 server.tool(
   "timeline_checkpoint",
-  "Checkpoint a whole directory tree into the timeline. Returns a checkpoint_id you can fork from or restore to. Excluded dir names (default: node_modules) are skipped at any depth and left untouched by restores.",
+  "Checkpoint a whole directory tree into the timeline. Returns a checkpoint_id you can fork from or restore to. Excluded dir names (default: node_modules and .git) are skipped at any depth and left untouched by restores — the timeline moves the tree, git keeps its own history.",
   {
     dir: z.string().describe("Absolute path of the directory to checkpoint"),
     label: z.string().optional(),
-    exclude: z.array(z.string()).optional().describe("Directory names to skip (default: ['node_modules'])"),
+    exclude: z.array(z.string()).optional().describe("Directory names to skip (default: ['node_modules', '.git'])"),
   },
   async ({ dir, label, exclude }) => {
     const g = await gate("timeline_checkpoint", { dir });
@@ -865,6 +873,7 @@ server.tool(
     const status = {
       idle: idle.stats(),
       hostname: os.hostname(),
+      ask_rules: ask.rules(),
       platform: `${os.type()} ${os.release()} (${os.arch()})`,
       uptimeMin: Math.round(os.uptime() / 60),
       memory: { freeMB: Math.round(os.freemem() / 1e6), totalMB: Math.round(os.totalmem() / 1e6) },

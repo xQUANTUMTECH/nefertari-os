@@ -80,6 +80,48 @@ const NOISY_PATTERNS = [
   /^(sudo )?(docker (build|pull|run|start|stop))\b/,
 ];
 
+// Commands a person's everyday request produces — "put the photos in a
+// folder", "run the tests" — that no snapshot covers and that were gated as
+// unknown. Found by making exactly that request through the broker: it asked
+// permission to move a file inside the folder it was tidying, and would have
+// asked again for every test run. A gate that fires on the most frequent
+// action teaches the operator to approve without reading, which is the failure
+// MAX_PENDING exists to prevent. So these are NOISY: pass, and say so.
+const TEST_RUNNERS = [
+  /^node --test\b/,
+  /^(npm|pnpm|yarn|bun) (test|t)\b/,
+  /^npx (vitest|jest|mocha|ava|tap|playwright test)\b/,
+  /^(pytest|python3? -m pytest|cargo test|go test|make test|mix test|rspec|phpunit)\b/,
+];
+
+// mv/cp stay INSIDE the working directory when every path they name is
+// relative and never climbs out. That is the whole test: a relative path
+// cannot land anywhere else, and a plan or checkpoint covers the tree. One
+// absolute path, one `..`, one `~` or `$HOME`, and it is the gate as before.
+// rm is not here on purpose: fs_delete exists, and it snapshots first.
+const MOVE_COPY = /^(mv|cp)\b/;
+const escapesDir = (p) => /^[\/~$]/.test(p) || /(^|\/)\.\.(\/|$)/.test(p);
+function tokens(s) {
+  const out = [];
+  const re = /"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+function staysInside(seg) {
+  const [, ...rest] = tokens(seg);
+  for (const t of rest) {
+    if (t.startsWith("-")) {
+      // A flag — unless it carries a path itself (--target-directory=DIR).
+      const eq = t.indexOf("=");
+      if (eq > 0 && escapesDir(t.slice(eq + 1))) return false;
+      continue;
+    }
+    if (escapesDir(t)) return false;
+  }
+  return true;
+}
+
 function scanDanger(cmd) {
   for (const d of DANGER) if (d.re.test(cmd)) return d.why;
   const rd = redirectDanger(cmd);
@@ -100,6 +142,8 @@ function classifySegment(seg) {
   }
   if (SAFE_RO.some((re) => re.test(s))) return CLASS.REVERSIBLE;
   if (NOISY_PATTERNS.some((re) => re.test(s))) return CLASS.NOISY;
+  if (TEST_RUNNERS.some((re) => re.test(s))) return CLASS.NOISY;
+  if (MOVE_COPY.test(s) && staysInside(s)) return CLASS.NOISY;
   return CLASS.IRREVERSIBLE;
 }
 
@@ -132,11 +176,40 @@ export function classifyShell(command) {
   // Split on every separator; the whole is only as safe as its weakest
   // segment. Splitting on `|` is safe because pipe-into-interpreter was already
   // caught in step 1, so remaining pipes are safe cmd -> safe cmd.
-  const segments = forSegments.split(/&&|\|\||[|;&\n]/).map((s) => s.trim()).filter(Boolean);
+  const segments = splitSegments(forSegments);
   const classes = segments.map(classifySegment);
   if (classes.includes(CLASS.IRREVERSIBLE)) return CLASS.IRREVERSIBLE;
   if (classes.includes(CLASS.NOISY)) return CLASS.NOISY;
   return CLASS.REVERSIBLE;
+}
+
+// Separators split commands only OUTSIDE quotes. `grep -E 'a|b'` is one
+// command with a regex in it, not two — split naively it left an orphan
+// `b'` that matched nothing, which sent every test run with a filtered
+// output to the gate. Safe to honour quotes here because step 1 already
+// scanned the raw string, quotes and all, for anything dangerous.
+function splitSegments(str) {
+  const out = [];
+  let cur = "", q = null;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (q) {
+      cur += c;
+      if (c === q) q = null;
+      else if (c === "\\" && q === '"' && i + 1 < str.length) cur += str[++i];
+      continue;
+    }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (c === "\\" && i + 1 < str.length) { cur += c + str[++i]; continue; }
+    if (c === "&" || c === "|" || c === ";" || c === "\n") {
+      out.push(cur); cur = "";
+      if ((c === "&" || c === "|") && str[i + 1] === c) i++;
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((s) => s.trim()).filter(Boolean);
 }
 
 // Human-readable reason for the shell verdict (used in journal + gate message).
