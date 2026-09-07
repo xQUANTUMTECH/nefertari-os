@@ -168,7 +168,7 @@ export const CHAT_PAGE = `<!doctype html>
       </section>
       <aside class="side">
         <section class="card w" id="window">
-          <h2>Window <span class="pill q" id="wbudget"></span></h2>
+          <h2>Window <span><button class="pill" id="fold-now" title="Fold the old turns into one packet now">Fold</button> <span class="pill q" id="wbudget"></span></span></h2>
           <div class="bar"><i id="wbar" style="width:0%"></i></div>
           <div id="wstats"></div>
         </section>
@@ -256,7 +256,8 @@ function gateCard(p){
 function renderHistory(s){
   const briefs = {};
   for (const m of s.messages) {
-    if (m.role === "user") add('<div class="m user">' + esc(m.content) + "</div>");
+    if (m.fold) add('<div class="tool ev" title="' + esc(m.content.slice(0, 600)) + '">folded ' + m.fold.messages + " messages (turns " + m.fold.turns[0] + "–" + m.fold.turns[1] + ") → <b>" + esc(m.fold.handle) + "</b></div>");
+    else if (m.role === "user") add('<div class="m user">' + esc(m.content) + "</div>");
     else if (m.role === "assistant") { if (m.content) add('<div class="m assistant">' + esc(m.content) + "</div>"); for (const c of m.tool_calls || []) { let a = {}; try { a = JSON.parse(c.arguments || "{}"); } catch {} briefs[c.id] = a.command ? a.command.slice(0, 80) : a.path ? a.path.split("/").pop() : ""; toolChip({ id: c.id, name: c.name, args_brief: briefs[c.id] }); } }
     else if (m.role === "tool") { let j = null; try { j = JSON.parse(m.content); } catch {} toolChip({ id: m.tool_call_id, name: m.name, args_brief: briefs[m.tool_call_id] || "", status: m.evicted ? "paged out" : j && j.status ? j.status : j && j.exitCode != null ? "exit " + j.exitCode : "ok", handle: m.handle, preview: m.evicted ? m.content : m.content.slice(0, 400), checkpoint_id: j && j.checkpoint_id }); }
   }
@@ -272,7 +273,7 @@ function renderStats(st){
   const pct = Math.min(100, Math.round(100 * (st.resident || 0) / (st.budget || 1)));
   $("wbudget").textContent = (st.resident || 0) + " / " + st.budget + " tok";
   $("wbar").style.width = pct + "%"; $("wbar").className = pct > 85 ? "hot" : "";
-  $("wstats").innerHTML = [["turns", st.turns], ["model calls", st.model_calls], ["tool calls", st.tool_calls], ["delivered, total", st.delivered + " tok"], ["evicted", st.evicted + " results · " + kb(st.evicted_bytes || 0)], ["faulted back in", st.faults], ["gates", st.gates]]
+  $("wstats").innerHTML = [["turns", st.turns], ["model calls", st.model_calls], ["tool calls", st.tool_calls], ["delivered, total", st.delivered + " tok"], ["evicted", st.evicted + " results · " + kb(st.evicted_bytes || 0)], ["stubs by local model", st.stub_local || 0], ["folds", st.folds || 0], ["faulted back in", st.faults], ["gates", st.gates], ["ranker", st.ranker || "heuristic"]]
     .map(([k, v]) => '<div class="kv"><span>' + k + "</span><span>" + v + "</span></div>").join("");
 }
 
@@ -304,7 +305,8 @@ function onEvent(e){
   else if (e.type === "tool") toolChip(e);
   else if (e.type === "state") { setState(e.state, e.pending); if (e.error) add('<div class="m sys">error: ' + esc(e.error) + "</div>"); if (e.state === "idle") { loadFiles(curDir); loadTimeline(); } }
   else if (e.type === "stats") renderStats(e.stats);
-  else if (e.type === "evict") add('<div class="tool ev">paged out → <b>' + esc(e.handle) + "</b> " + esc(e.tool || "") + " · " + kb(e.bytes) + " · " + esc(e.why) + "</div>");
+  else if (e.type === "evict") add('<div class="tool ev">paged out → <b>' + esc(e.handle) + "</b> " + esc(e.tool || "") + " · " + kb(e.bytes) + " · " + esc(e.why) + (e.gist ? " · gist(local): " + esc(e.gist) : "") + "</div>");
+  else if (e.type === "fold") add('<div class="tool ev">folded ' + e.messages + " messages (turns " + e.turns[0] + "–" + e.turns[1] + ") → <b>" + esc(e.handle) + "</b> · " + e.tokens_before + " → " + e.tokens_after + " tok</div>");
   else if (e.type === "fault") add('<div class="tool ev">faulted back ← <b>' + esc(e.handle) + "</b>" + (e.grep ? " · grep " + esc(e.grep) : "") + "</div>");
   else if (e.type === "decision") { const g = document.getElementById("g-" + e.action_id); if (g) { g.classList.add("done"); g.querySelectorAll("button").forEach((b) => b.disabled = true); } }
   else if (e.type === "restore") { add('<div class="m sys">restored ' + esc(e.checkpoint_id) + "</div>"); loadFiles(curDir); loadTimeline(); }
@@ -338,6 +340,7 @@ async function loadTimeline(){
   $("ckpts").querySelectorAll("button").forEach((b) => b.onclick = async (ev) => { ev.stopPropagation(); if (!confirm("Put the folder back as it was at this point? (this is itself undoable)")) return; b.disabled = true; await api("/chat/sessions/" + SID + "/restore", { method: "POST", body: JSON.stringify({ checkpoint_id: b.dataset.ck }) }); });
 }
 $("tl-refresh").onclick = loadTimeline;
+$("fold-now").onclick = async () => { const r = await api("/chat/sessions/" + SID + "/fold", { method: "POST" }); if (!r.ok) add('<div class="m sys">' + esc(r.reason || r.error || "") + "</div>"); };
 document.querySelectorAll(".rail a[href^='#']").forEach((a) => a.onclick = (e) => { e.preventDefault(); const t = a.getAttribute("href").slice(1); if (t) { const el = document.getElementById(t); if (el) el.scrollIntoView({ behavior: "smooth" }); } });
 boot();
 </script>`;

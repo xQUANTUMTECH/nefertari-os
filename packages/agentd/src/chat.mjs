@@ -31,6 +31,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { HOME, ensureHome } from "./paths.mjs";
 import * as approvals from "./approvals.mjs";
 import * as journal from "./journal.mjs";
+import * as pager from "./pager.mjs";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const ROOT = path.join(HOME, "chat");
@@ -41,14 +42,8 @@ const MODEL = () => ({
   key: process.env.NEFERTARI_CHAT_KEY || "",
   model: process.env.NEFERTARI_CHAT_MODEL || "default",
 });
-const BUDGET = () => Number(process.env.NEFERTARI_CHAT_BUDGET) || 16000; // est. tokens delivered per model call
-const MAX_RESULT = () => Number(process.env.NEFERTARI_CHAT_MAX_RESULT) || 6000; // chars: larger results are paged on arrival
-const KEEP = () => Number(process.env.NEFERTARI_CHAT_KEEP) || 6; // most recent messages never evicted
+const { BUDGET, MAX_RESULT, est } = pager;
 const MAX_STEPS = 40;
-
-// A token estimate that is wrong the same way every turn is a fair meter:
-// the point is the trend and the budget, not billing.
-const est = (s) => Math.ceil(String(s ?? "").length / 4);
 
 // --- the body: agentd over MCP, one connection, lazily --------------------------
 let mcp = null, mcpTools = null;
@@ -158,7 +153,7 @@ export async function create({ goal, dir }) {
     messages: [],
     events: [],
     evictions: [],
-    stats: { turns: 0, model_calls: 0, tool_calls: 0, delivered: 0, last_delivered: 0, evicted: 0, evicted_bytes: 0, faults: 0, gates: 0 },
+    stats: { turns: 0, model_calls: 0, tool_calls: 0, delivered: 0, last_delivered: 0, evicted: 0, evicted_bytes: 0, stub_local: 0, folds: 0, faults: 0, gates: 0 },
   };
   let recall = "(recall unavailable)";
   try {
@@ -166,8 +161,8 @@ export async function create({ goal, dir }) {
   } catch (e) {
     recall = `(recall failed: ${e.message})`;
   }
-  s.messages.push({ role: "system", content: SYSTEM(s, recall) });
-  if (s.goal) s.messages.push({ role: "user", content: s.goal });
+  s.messages.push({ role: "system", content: SYSTEM(s, recall), turn: 0 });
+  if (s.goal) s.messages.push({ role: "user", content: s.goal, turn: 0 });
   sessions.set(id, s);
   fs.mkdirSync(path.join(dirOf(id), "evicted"), { recursive: true });
   persist(s);
@@ -204,13 +199,15 @@ export function view(s) {
     model: s.model,
     state: s.state,
     pending: s.pending && { action_id: s.pending.action_id, tool: s.pending.tool, args: s.pending.args, reason: s.pending.reason },
-    stats: { ...s.stats, budget: BUDGET(), resident: est(s.messages.map((m) => m.content || "").join("")) },
+    stats: { ...s.stats, budget: BUDGET(), resident: pager.total(s), ranker: pager.rankerName() },
     // How many events this view already accounts for, so a page that renders
     // history from here can skip that many when the stream replays them.
     events_seen: s.events.length,
     evictions: s.evictions,
-    messages: s.messages.filter((m) => m.role !== "system").map((m) => ({
+    messages: s.messages.filter((m) => m.role !== "system" || m.fold).map((m) => ({
       role: m.role,
+      fold: m.fold,
+      turn: m.turn,
       content: m.content,
       name: m.name,
       tool_call_id: m.tool_call_id,
@@ -221,64 +218,13 @@ export function view(s) {
   };
 }
 
-// --- the pager --------------------------------------------------------------------
-// A stub is deterministic — tool, arguments, size, first line — never a
-// summary the model wrote of its own result. The body goes to disk as-is.
-function evict(s, m, why) {
-  const handle = "win_" + crypto.randomBytes(5).toString("hex");
-  const bodyText = String(m.content ?? "");
-  fs.writeFileSync(path.join(dirOf(s.id), "evicted", handle + ".txt"), bodyText);
-  const first = bodyText.split("\n").find((l) => l.trim()) || "";
-  const brief = m.args_brief || "";
-  m.handle = handle;
-  m.evicted = { at_turn: s.stats.turns, bytes: bodyText.length, why };
-  m.content = `[evicted → ${handle}] ${m.name || m.role} ${brief ? "· " + brief + " " : ""}· ${bodyText.length} B · ${first.slice(0, 80)}`;
-  s.evictions.push({ handle, turn: s.stats.turns, tool: m.name, bytes: bodyText.length, why });
-  s.stats.evicted++;
-  s.stats.evicted_bytes += bodyText.length;
-  log(s, { type: "evict", handle, tool: m.name, bytes: bodyText.length, why });
-  emit(s, { type: "evict", handle, tool: m.name, bytes: bodyText.length, why });
-}
-
-function pageWindow(s) {
-  const budget = BUDGET();
-  const total = () => s.messages.reduce((n, m) => n + est(m.content) + est(JSON.stringify(m.tool_calls || "")), 0);
-  // Candidates: tool results, oldest first, outside the recent KEEP, not yet paged.
-  const keepFrom = Math.max(0, s.messages.length - KEEP());
-  const candidates = s.messages
-    .map((m, i) => ({ m, i }))
-    .filter(({ m, i }) => m.role === "tool" && !m.evicted && i < keepFrom);
-  for (const { m } of candidates) {
-    if (total() <= budget) break;
-    evict(s, m, "budget");
-  }
-  return total();
-}
-
-function windowFetch(s, { handle, grep, offset = 0, limit = 2000 }) {
-  const f = path.join(dirOf(s.id), "evicted", String(handle).replace(/[^a-z0-9_]/gi, "") + ".txt");
-  if (!fs.existsSync(f)) return { error: `no such handle in this window: ${handle}` };
-  const text = fs.readFileSync(f, "utf8");
-  s.stats.faults++;
-  log(s, { type: "fault", handle, grep, offset, limit });
-  emit(s, { type: "fault", handle, grep: grep || null });
-  if (grep) {
-    let re;
-    try {
-      re = new RegExp(grep, "i");
-    } catch (e) {
-      return { error: `bad regex: ${e.message}` };
-    }
-    const lines = text.split("\n");
-    const hits = [];
-    lines.forEach((l, i) => {
-      if (re.test(l) && hits.length < 60) hits.push({ line: i + 1, text: l.slice(0, 300) });
-    });
-    return { handle, total_lines: lines.length, bytes: text.length, matches: hits.length, hits };
-  }
-  const lim = Math.min(Number(limit) || 2000, 4000);
-  return { handle, bytes: text.length, offset, text: text.slice(offset, offset + lim), more: offset + lim < text.length };
-}
+// --- the pager lives in pager.mjs; this is what it needs from a session ---
+const ctx = (s) => ({
+  dir: dirOf(s.id),
+  log: (e) => log(s, e),
+  emit: (e) => emit(s, e),
+  recall: () => callTool("recall", { dir: s.dir, limit: 8 }),
+});
 
 // --- the loop ---------------------------------------------------------------------
 async function complete(s, messages, tools) {
@@ -309,7 +255,7 @@ async function runCall(s, call) {
   emit(s, { type: "tool", id: call.id, name, args_brief: briefArgs(args), phase: "start" });
   let text;
   if (name === "window_fetch") {
-    text = JSON.stringify(windowFetch(s, args));
+    text = JSON.stringify(pager.windowFetch(s, args, ctx(s)));
   } else {
     try {
       text = await callTool(name, args);
@@ -319,11 +265,11 @@ async function runCall(s, call) {
   }
   const j = parse(text);
   const gated = j && j.status === "pending_approval";
-  const msg = { role: "tool", tool_call_id: call.id, name, content: text, args_brief: briefArgs(args) };
+  const msg = { role: "tool", tool_call_id: call.id, name, content: text, args_brief: briefArgs(args), turn: s.stats.turns };
   s.messages.push(msg);
   // A large result is paged on arrival: the model gets the stub and the
   // handle; nothing that big needs to sit in the window to be findable.
-  if (!gated && text.length > MAX_RESULT()) evict(s, msg, "size");
+  if (!gated && text.length > MAX_RESULT()) await pager.evict(s, msg, "size", ctx(s));
   emit(s, {
     type: "tool",
     id: call.id,
@@ -347,7 +293,7 @@ async function runCall(s, call) {
 export async function say(s, text) {
   if (s.state === "thinking") throw new Error("still thinking");
   if (s.state === "waiting_for_you") throw new Error("an action is waiting for your decision first");
-  s.messages.push({ role: "user", content: text });
+  s.messages.push({ role: "user", content: text, turn: s.stats.turns });
   emit(s, { type: "user", content: text });
   persist(s);
   run(s); // not awaited: the page follows over events
@@ -360,7 +306,7 @@ async function run(s, resumeCalls = null) {
     for (let step = 0; step < MAX_STEPS; step++) {
       if (!pendingCalls) {
         s.stats.turns++;
-        const resident = pageWindow(s);
+        const resident = await pager.pageWindow(s, ctx(s));
         const tools = await toolsForModel();
         const toSend = s.messages.map(({ role, content, tool_calls, tool_call_id, name }) => ({ role, content, ...(tool_calls ? { tool_calls } : {}), ...(tool_call_id ? { tool_call_id } : {}), ...(name && role === "tool" ? { name } : {}) }));
         s.stats.model_calls++;
@@ -369,7 +315,7 @@ async function run(s, resumeCalls = null) {
         log(s, { type: "deliver", est_tokens: resident, messages: toSend.length });
         emit(s, { type: "stats", stats: { ...s.stats, budget: BUDGET(), resident } });
         const m = await complete(s, toSend, tools);
-        s.messages.push({ role: "assistant", content: m.content || "", tool_calls: m.tool_calls || undefined });
+        s.messages.push({ role: "assistant", content: m.content || "", tool_calls: m.tool_calls || undefined, turn: s.stats.turns });
         if (m.content) emit(s, { type: "assistant", content: m.content });
         pendingCalls = (m.tool_calls || []).slice();
         if (!pendingCalls.length) {
@@ -419,7 +365,7 @@ export async function decide(s, actionId, what) {
     msg.content = text;
     const j = parse(text);
     emit(s, { type: "tool", id: p.call.id, name: p.tool, args_brief: briefArgs(p.args), phase: "done", status: j?.status || (j?.exitCode != null ? `exit ${j.exitCode}` : "ok"), bytes: text.length, checkpoint_id: j?.checkpoint_id, snapshot_id: j?.snapshot_id, preview: text.slice(0, 400) });
-    if (text.length > MAX_RESULT()) evict(s, msg, "size");
+    if (text.length > MAX_RESULT()) await pager.evict(s, msg, "size", ctx(s));
   } else {
     msg.content = JSON.stringify({ status: "denied_by_human", action_id: actionId, advice: "the person said no to this action; do not retry it, explain and ask what they prefer" });
   }
@@ -519,6 +465,12 @@ export async function handle(req, res, url, parts) {
     if (action === "restore" && req.method === "POST") {
       const b = await readJson(req);
       return json(res, 200, await restore(s, String(b.checkpoint_id || "")));
+    }
+    if (action === "fold" && req.method === "POST") {
+      // The person asks for the old turns to fold now, budget or not.
+      const p = await pager.fold(s, ctx(s), { force: true });
+      persist(s);
+      return json(res, 200, p ? { ok: true, fold: p.fold } : { ok: false, reason: "nothing to fold yet: too few messages outside the recent ones" });
     }
     if (action === "window" && req.method === "GET") {
       // The record of the window itself: every delivery, eviction and fault.
